@@ -253,9 +253,10 @@ function createServer(apiKey: string | null): McpServer {
           limit: number;
         };
 
-        const summary = data.data
+        type QrRow = { id: string; name: string; type: string; isDynamic?: boolean }
+        const summary = (data.data as QrRow[])
           .slice(0, 20)
-          .map((qr: any) => `• [${qr.id}] ${qr.name} (${qr.type})${qr.isDynamic ? " [dynamic]" : ""}`)
+          .map((qr) => `• [${qr.id}] ${qr.name} (${qr.type})${qr.isDynamic ? " [dynamic]" : ""}`)
           .join("\n");
 
         return {

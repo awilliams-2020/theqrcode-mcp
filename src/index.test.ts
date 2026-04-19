@@ -7,7 +7,7 @@
  * without needing the real theqrcode.io backend.
  */
 
-import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import express from 'express'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
@@ -267,18 +267,6 @@ async function stopServer(server: Server) {
 // ---------------------------------------------------------------------------
 // MCP protocol helpers
 // ---------------------------------------------------------------------------
-
-async function mcpInitialize(baseUrl: string) {
-  const res = await fetch(`${baseUrl}/mcp`, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
-    body: JSON.stringify({
-      jsonrpc: '2.0', id: 1, method: 'initialize',
-      params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1.0' } },
-    }),
-  })
-  return res
-}
 
 async function mcpListTools(baseUrl: string) {
   const res = await fetch(`${baseUrl}/mcp`, {
