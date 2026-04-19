@@ -32,7 +32,16 @@ const GenerateQRInput = {
       "QR code type. Use 'url' for web links, 'wifi' for network credentials " +
         "(format: WIFI:T:WPA;S:<ssid>;P:<password>;;), 'contact' for vCard data, " +
         "'text' for arbitrary strings, 'email' for email addresses. " +
-        "Note: 'email' type requires an authenticated API key (Developer or Pro plan)."
+        "Note: 'email' requires a Bearer token — it cannot be used with the public (unauthenticated) MCP session."
+    ),
+  name: z
+    .string()
+    .min(1)
+    .max(200)
+    .optional()
+    .describe(
+      "Display name when saving via the authenticated API. If omitted, a name is derived from " +
+        "type and content."
     ),
   content: z
     .string()
@@ -91,6 +100,46 @@ const GetAnalyticsInput = {
     .describe("Time range for analytics data. Defaults to '30d'."),
 };
 
+/** POST /api/v1/qr-codes requires `name`; used when the tool omits it. */
+function defaultQrNameForMcp(type: string, content: string): string {
+  const max     = 100;
+  const oneLine = content.replace(/\s+/g, " ").trim();
+  const snippet = oneLine.length <= max ? oneLine : `${oneLine.slice(0, max - 1)}…`;
+  return `MCP ${type}: ${snippet}`;
+}
+
+/**
+ * Public POST returns `imageUrl`; v1 POST may omit it and only set `shortUrl` (dynamic QRs).
+ */
+function formatShareLinkLine(
+  data: { imageUrl?: string; shortUrl?: string | null },
+  isAuthenticated: boolean
+): string {
+  if (data.imageUrl) return `Hosted URL: ${data.imageUrl}`;
+  if (data.shortUrl) return `Short URL (tracking): ${data.shortUrl}`;
+  if (isAuthenticated) {
+    return (
+      "Hosted URL: not returned by the API for this QR code; use the PNG above or your dashboard."
+    );
+  }
+  return "Hosted URL: not provided.";
+}
+
+/** GET /api/v1/qr-codes returns totals under `pagination`; tolerate a flat legacy shape. */
+function normalizeListPagination(raw: {
+  data:    unknown[];
+  pagination?: { page: number; limit: number; total: number };
+  page?:   number;
+  limit?:  number;
+  total?:  number;
+}): { page: number; limit: number; total: number } {
+  const p     = raw.pagination;
+  const page  = p?.page ?? raw.page ?? 1;
+  const limit = p?.limit ?? raw.limit ?? 20;
+  const total = p?.total ?? raw.total ?? raw.data.length;
+  return { page, limit, total };
+}
+
 // ---------------------------------------------------------------------------
 // Factory: creates a fresh McpServer with all tools registered.
 // Called once per HTTP request so stateless transport works correctly.
@@ -113,9 +162,22 @@ function createServer(apiKey: string | null): McpServer {
       "Returns a hosted image URL and a base64 PNG data URL for inline display. " +
       "When authenticated, the QR code is saved to the user's account.",
     GenerateQRInput,
-    async ({ type, content, size, darkColor, lightColor }) => {
+    async ({ type, content, name, size, darkColor, lightColor }) => {
+      if (!isAuthenticated && type === "email") {
+        throw new Error(
+          'type "email" requires an API key. The public QR API only supports url, wifi, contact, ' +
+            "and text — use one of those, or connect with a Bearer token."
+        );
+      }
+
       const body: Record<string, unknown> = { type, content };
       const settings: Record<string, unknown> = {};
+
+      if (isAuthenticated) {
+        const trimmed = name?.trim();
+        body.name =
+          trimmed && trimmed.length > 0 ? trimmed : defaultQrNameForMcp(type, content);
+      }
 
       if (size !== undefined) settings.size = size;
       if (darkColor !== undefined || lightColor !== undefined) {
@@ -171,11 +233,12 @@ function createServer(apiKey: string | null): McpServer {
       }
 
       const data = (await res.json()) as {
-        qrImage:  string;
-        imageUrl: string;
-        type:     string;
-        content:  string;
-        id?:      string;
+        qrImage:   string;
+        imageUrl?: string;
+        shortUrl?: string | null;
+        type:      string;
+        content:   string;
+        id?:       string;
       };
 
       const base64 = data.qrImage.replace(/^data:image\/[^;]+;base64,/, "");
@@ -191,7 +254,7 @@ function createServer(apiKey: string | null): McpServer {
               `QR code generated.\n` +
               `Type: ${data.type}\n` +
               `Content: ${data.content}\n` +
-              `Hosted URL: ${data.imageUrl}` +
+              `${formatShareLinkLine(data, isAuthenticated)}` +
               savedNote,
           },
           {
@@ -246,15 +309,17 @@ function createServer(apiKey: string | null): McpServer {
           throw new Error(`QR API returned ${res.status}: ${String(data["error"] ?? res.statusText)}`);
         }
 
-        const data = await res.json() as {
-          data:  unknown[];
-          total: number;
-          page:  number;
-          limit: number;
+        const raw = (await res.json()) as {
+          data:        unknown[];
+          pagination?: { page: number; limit: number; total: number };
+          total?:      number;
+          page?:       number;
+          limit?:      number;
         };
+        const { page: listPage, total: listTotal } = normalizeListPagination(raw);
 
         type QrRow = { id: string; name: string; type: string; isDynamic?: boolean }
-        const summary = (data.data as QrRow[])
+        const summary = (raw.data as QrRow[])
           .slice(0, 20)
           .map((qr) => `• [${qr.id}] ${qr.name} (${qr.type})${qr.isDynamic ? " [dynamic]" : ""}`)
           .join("\n");
@@ -264,7 +329,7 @@ function createServer(apiKey: string | null): McpServer {
             {
               type: "text" as const,
               text:
-                `QR codes (page ${data.page}, showing ${data.data.length} of ${data.total}):\n\n` +
+                `QR codes (page ${listPage}, showing ${raw.data.length} of ${listTotal}):\n\n` +
                 (summary || "No QR codes found."),
             },
           ],

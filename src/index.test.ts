@@ -123,6 +123,39 @@ function mockFetchError(status: number, body: unknown = { error: 'error' }) {
 // so tests don't depend on the listen side-effect
 // ---------------------------------------------------------------------------
 
+function defaultQrNameForMcp(type: string, content: string): string {
+  const max     = 100
+  const oneLine = content.replace(/\s+/g, ' ').trim()
+  const snippet = oneLine.length <= max ? oneLine : `${oneLine.slice(0, max - 1)}…`
+  return `MCP ${type}: ${snippet}`
+}
+
+function formatShareLinkLine(
+  data: { imageUrl?: string; shortUrl?: string | null },
+  isAuthenticated: boolean
+): string {
+  if (data.imageUrl) return `Hosted URL: ${data.imageUrl}`
+  if (data.shortUrl) return `Short URL (tracking): ${data.shortUrl}`
+  if (isAuthenticated) {
+    return 'Hosted URL: not returned by the API for this QR code; use the PNG above or your dashboard.'
+  }
+  return 'Hosted URL: not provided.'
+}
+
+function normalizeListPagination(raw: {
+  data:        unknown[]
+  pagination?: { page: number; limit: number; total: number }
+  page?:       number
+  limit?:      number
+  total?:      number
+}): { page: number; limit: number; total: number } {
+  const p     = raw.pagination
+  const page  = p?.page ?? raw.page ?? 1
+  const limit = p?.limit ?? raw.limit ?? 20
+  const total = p?.total ?? raw.total ?? raw.data.length
+  return { page, limit, total }
+}
+
 function createServer(apiKey: string | null): McpServer {
   const server          = new McpServer({ name: 'theqrcode-mcp', version: '1.1.0' })
   const isAuthenticated = apiKey !== null
@@ -132,14 +165,26 @@ function createServer(apiKey: string | null): McpServer {
     'Generate a QR code image.',
     {
       type:       z.enum(['url', 'wifi', 'contact', 'text', 'email']),
+      name:       z.string().min(1).max(200).optional(),
       content:    z.string().min(1),
       size:       z.number().int().min(64).max(1024).optional(),
       darkColor:  z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
       lightColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
     },
-    async ({ type, content, size, darkColor, lightColor }) => {
+    async ({ type, content, name, size, darkColor, lightColor }) => {
+      if (!isAuthenticated && type === 'email') {
+        throw new Error(
+          'type "email" requires an API key. The public QR API only supports url, wifi, contact, ' +
+            'and text — use one of those, or connect with a Bearer token.'
+        )
+      }
       const body: Record<string, unknown> = { type, content }
       const settings: Record<string, unknown> = {}
+      if (isAuthenticated) {
+        const trimmed = name?.trim()
+        body.name =
+          trimmed && trimmed.length > 0 ? trimmed : defaultQrNameForMcp(type, content)
+      }
       if (size !== undefined) settings.size = size
       if (darkColor || lightColor) {
         const color: Record<string, string> = {}
@@ -175,7 +220,14 @@ function createServer(apiKey: string | null): McpServer {
         throw new Error(`QR API returned ${res.status}: ${String(data['error'] ?? res.statusText)}`)
       }
 
-      const data = await res.json() as { qrImage: string; imageUrl: string; type: string; content: string; id?: string }
+      const data = await res.json() as {
+        qrImage: string
+        imageUrl?: string
+        shortUrl?: string | null
+        type: string
+        content: string
+        id?: string
+      }
       const base64 = data.qrImage.replace(/^data:image\/[^;]+;base64,/, '')
       const savedNote = isAuthenticated && data.id
         ? `\nSaved to account with ID: ${data.id}`
@@ -183,7 +235,12 @@ function createServer(apiKey: string | null): McpServer {
 
       return {
         content: [
-          { type: 'text' as const, text: `QR code generated.\nType: ${data.type}\nContent: ${data.content}\nHosted URL: ${data.imageUrl}${savedNote}` },
+          {
+            type: 'text' as const,
+            text:
+              `QR code generated.\nType: ${data.type}\nContent: ${data.content}\n` +
+              `${formatShareLinkLine(data, isAuthenticated)}${savedNote}`,
+          },
           { type: 'image' as const, data: base64, mimeType: 'image/png' as const },
         ],
       }
@@ -207,8 +264,20 @@ function createServer(apiKey: string | null): McpServer {
         })
         if (res.status === 403) throw new Error('list_qr_codes requires a Developer plan API key.')
         if (!res.ok) throw new Error(`QR API returned ${res.status}`)
-        const data = await res.json() as { data: unknown[]; total: number; page: number; limit: number }
-        return { content: [{ type: 'text' as const, text: `QR codes (page ${data.page}, ${data.data.length} of ${data.total})` }] }
+        const raw = await res.json() as {
+          data:        unknown[]
+          pagination?: { page: number; limit: number; total: number }
+          page?:       number
+          total?:      number
+          limit?:      number
+        }
+        const { page: listPage, total: listTotal } = normalizeListPagination(raw)
+        return {
+          content: [{
+            type: 'text' as const,
+            text:   `QR codes (page ${listPage}, ${raw.data.length} of ${listTotal})`,
+          }],
+        }
       }
     )
 
@@ -363,6 +432,26 @@ describe('generate_qr_code — routing', () => {
       const { url: calledUrl, opts: calledOpts } = upstreamCalls[0]
       expect(calledUrl).toBe(`${API_BASE_MOCK}/api/v1/qr-codes`)
       expect((calledOpts?.headers as Record<string, string>)?.['Authorization']).toBe('Bearer tqc_sk_live_mykey')
+      const parsed = JSON.parse((calledOpts?.body as string) ?? '{}') as Record<string, unknown>
+      expect(parsed.name).toBe('MCP url: https://example.com')
+      expect(parsed.type).toBe('url')
+      expect(parsed.content).toBe('https://example.com')
+    } finally {
+      await stopServer(server)
+    }
+  })
+
+  it('authenticated → uses trimmed name when provided', async () => {
+    mockFetchOk(makeMockQrResponse())
+    const { url, server } = await startTestServer('tqc_sk_live_mykey')
+    try {
+      await mcpCallTool(url, 'generate_qr_code', {
+        type:    'url',
+        content: 'https://example.com',
+        name:    '  My label  ',
+      })
+      const parsed = JSON.parse((upstreamCalls[0].opts?.body as string) ?? '{}') as Record<string, unknown>
+      expect(parsed.name).toBe('My label')
     } finally {
       await stopServer(server)
     }
@@ -387,6 +476,61 @@ describe('generate_qr_code — routing', () => {
       const result = await mcpCallTool(url, 'generate_qr_code', { type: 'url', content: 'https://example.com' })
       const text = result.result?.content?.find((c: { type: string }) => c.type === 'text')?.text ?? ''
       expect(text).toContain('qr_test_123')
+    } finally {
+      await stopServer(server)
+    }
+  })
+
+  it('authenticated v1 without imageUrl uses shortUrl in message when present', async () => {
+    mockFetchOk(
+      makeMockQrResponse({
+        imageUrl: undefined,
+        shortUrl: 'https://short.example/track/xyz',
+      })
+    )
+    const { url, server } = await startTestServer('tqc_sk_live_mykey')
+    try {
+      const result = await mcpCallTool(url, 'generate_qr_code', { type: 'url', content: 'https://example.com' })
+      const text = result.result?.content?.find((c: { type: string }) => c.type === 'text')?.text ?? ''
+      expect(text).toContain('Short URL (tracking): https://short.example/track/xyz')
+      expect(text).not.toMatch(/undefined/i)
+    } finally {
+      await stopServer(server)
+    }
+  })
+
+  it('authenticated v1 without imageUrl or shortUrl avoids undefined in message', async () => {
+    mockFetchOk(
+      makeMockQrResponse({
+        imageUrl: undefined,
+        shortUrl: null,
+        id:       'qr_static',
+      })
+    )
+    const { url, server } = await startTestServer('tqc_sk_live_mykey')
+    try {
+      const result = await mcpCallTool(url, 'generate_qr_code', { type: 'url', content: 'https://example.com' })
+      const text = result.result?.content?.find((c: { type: string }) => c.type === 'text')?.text ?? ''
+      expect(text).toContain('not returned by the API')
+      expect(text).not.toMatch(/undefined/i)
+    } finally {
+      await stopServer(server)
+    }
+  })
+
+  it('unauthenticated email type fails before calling upstream', async () => {
+    const { url, server } = await startTestServer(null)
+    try {
+      const result = await mcpCallTool(url, 'generate_qr_code', {
+        type:    'email',
+        content: 'a@b.com',
+      })
+      const errText =
+        result.error?.message ??
+        result.result?.content?.find((c: { type: string }) => c.type === 'text')?.text ??
+        ''
+      expect(errText).toMatch(/email.*API key|public QR API/i)
+      expect(upstreamCalls.length).toBe(0)
     } finally {
       await stopServer(server)
     }
@@ -471,6 +615,24 @@ describe('list_qr_codes', () => {
     try {
       await mcpCallTool(url, 'list_qr_codes', { type: 'url' })
       expect(upstreamCalls[0].url).toContain('type=url')
+    } finally {
+      await stopServer(server)
+    }
+  })
+
+  it('parses pagination object from GET /api/v1/qr-codes response', async () => {
+    mockFetchOk({
+      data: [
+        { id: 'qr1', name: 'A', type: 'url', isDynamic: false },
+      ],
+      pagination: { page: 2, limit: 5, total: 11 },
+    })
+    const { url, server } = await startTestServer('tqc_sk_live_dev')
+    try {
+      const result = await mcpCallTool(url, 'list_qr_codes', { page: 2, limit: 5 })
+      const text = result.result?.content?.find((c: { type: string }) => c.type === 'text')?.text ?? ''
+      expect(text).toContain('page 2')
+      expect(text).toContain('of 11')
     } finally {
       await stopServer(server)
     }
