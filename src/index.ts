@@ -12,7 +12,7 @@ const PORT     = process.env.PORT ?? 3001;
 
 /**
  * Extract an API key from the request Authorization header.
- * Accepts:  Authorization: Bearer tqc_sk_...
+ * Accepts:  Authorization: Bearer qr_...  (the format ApiKeyManager issues)
  * Returns null when no key is present (public / unauthenticated session).
  */
 function extractApiKey(req: Request): string | null {
