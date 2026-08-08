@@ -1,0 +1,5 @@
+# This directory is its own Docker build context. Without these, ~107 MB (106 MB
+# of it node_modules) is uploaded to the daemon on every build, while the
+# Dockerfile only COPYs package*.json, tsconfig.json and src/.
+node_modules/
+dist/
