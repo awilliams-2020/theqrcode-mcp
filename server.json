@@ -1,13 +1,21 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.theqrcode/qr-code-generator",
-  "description": "Generate QR codes for URLs, WiFi, contact cards, and text, with scan analytics.",
-  "version": "1.1.0",
+  "description": "Generate QR codes for URLs, WiFi, contacts and text. Paid API key adds saved codes + analytics.",
+  "version": "1.1.1",
   "websiteUrl": "https://theqrcode.io",
   "remotes": [
     {
       "type": "streamable-http",
-      "url": "https://mcp.theqrcode.io/mcp"
+      "url": "https://mcp.theqrcode.io/mcp",
+      "headers": [
+        {
+          "name": "Authorization",
+          "description": "Optional. Bearer <api key>. Without it the session is anonymous and exposes only generate_qr_code (url, wifi, contact, text; 100 req/hr per IP). A Developer-plan key additionally exposes list_qr_codes and get_analytics, saves codes to the account, and enables the email QR type.",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
     }
   ]
 }

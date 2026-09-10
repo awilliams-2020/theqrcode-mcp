@@ -146,7 +146,7 @@ function normalizeListPagination(raw: {
 // ---------------------------------------------------------------------------
 
 function createServer(apiKey: string | null): McpServer {
-  const server          = new McpServer({ name: "theqrcode-mcp", version: "1.1.0" });
+  const server          = new McpServer({ name: "theqrcode-mcp", version: "1.1.1" });
   const isAuthenticated = apiKey !== null;
 
   // -------------------------------------------------------------------------
@@ -397,7 +397,7 @@ app.use(express.json());
 
 // Health check
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok", service: "theqrcode-mcp", version: "1.1.0" });
+  res.json({ status: "ok", service: "theqrcode-mcp", version: "1.1.1" });
 });
 
 // MCP endpoint — stateless: new server + transport per request
