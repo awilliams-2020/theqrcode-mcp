@@ -1,7 +1,7 @@
 {
   "name": "theqrcode-mcp-server",
-  "version": "1.1.1",
-  "description": "MCP server for theqrcode.io — generate QR codes from Claude, Cursor, and any MCP-compatible AI agent",
+  "version": "1.1.2",
+  "description": "MCP server for theqrcode.io \u2014 generate QR codes from Claude, Cursor, and any MCP-compatible AI agent",
   "private": true,
   "type": "module",
   "scripts": {
@@ -22,5 +22,25 @@
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",
     "vitest": "^4.1.4"
-  }
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/awilliams-2020/theqrcode-mcp.git"
+  },
+  "homepage": "https://theqrcode.io/mcp",
+  "bugs": {
+    "url": "https://github.com/awilliams-2020/theqrcode-mcp/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "qr-code",
+    "qr",
+    "claude",
+    "cursor",
+    "ai-agent",
+    "qr-code-generator",
+    "qr-analytics"
+  ]
 }

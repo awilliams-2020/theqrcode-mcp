@@ -1,9 +1,14 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.theqrcode/qr-code-generator",
+  "title": "TheQRCode.io",
   "description": "Generate QR codes for URLs, WiFi, contacts and text. Paid API key adds saved codes + analytics.",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "websiteUrl": "https://theqrcode.io",
+  "repository": {
+    "url": "https://github.com/awilliams-2020/theqrcode-mcp",
+    "source": "github"
+  },
   "remotes": [
     {
       "type": "streamable-http",
