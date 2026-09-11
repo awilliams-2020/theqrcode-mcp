@@ -268,122 +268,140 @@ function createServer(apiKey: string | null): McpServer {
   );
 
   // -------------------------------------------------------------------------
-  // Extended tools — Developer plan only (authenticated sessions)
+  // Extended tools — Developer plan only.
+  //
+  // These are ADVERTISED to every session, authenticated or not, so that
+  // directory crawlers (Glama, MCP registries) that probe tools/list
+  // anonymously can see the full surface. Each one refuses at call time
+  // without a key; the descriptions state the plan requirement up front, so
+  // the listing never implies analytics is free.
   // -------------------------------------------------------------------------
 
-  if (isAuthenticated) {
-    // Tool: list_qr_codes
-    server.tool(
-      "list_qr_codes",
-      "List QR codes saved to the authenticated user's account. " +
-        "Supports pagination and filtering by type. " +
-        "Requires an authenticated API key (Developer plan).",
-      ListQRCodesInput,
-      async ({ page = 1, limit = 20, type }) => {
-        const params = new URLSearchParams({
-          page:  String(page),
-          limit: String(limit),
+  // Tool: list_qr_codes
+  server.tool(
+    "list_qr_codes",
+    "List QR codes saved to the authenticated user's account. " +
+      "Supports pagination and filtering by type. " +
+      "Requires an authenticated API key (Developer plan).",
+    ListQRCodesInput,
+    async ({ page = 1, limit = 20, type }) => {
+      if (!isAuthenticated) {
+        throw new Error(
+          "list_qr_codes requires a Developer plan API key. Reconnect with an " +
+            "Authorization: Bearer <api key> header — keys at https://theqrcode.io/pricing."
+        );
+      }
+
+      const params = new URLSearchParams({
+        page:  String(page),
+        limit: String(limit),
+      });
+      if (type) params.set("type", type);
+
+      let res: globalThis.Response;
+      try {
+        res = await fetch(`${API_BASE}/api/v1/qr-codes?${params}`, {
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "User-Agent":  "theqrcode-mcp/1.1",
+          },
         });
-        if (type) params.set("type", type);
-
-        let res: globalThis.Response;
-        try {
-          res = await fetch(`${API_BASE}/api/v1/qr-codes?${params}`, {
-            headers: {
-              Authorization: `Bearer ${apiKey}`,
-              "User-Agent":  "theqrcode-mcp/1.1",
-            },
-          });
-        } catch (err) {
-          throw new Error(`Failed to reach QR API: ${String(err)}`);
-        }
-
-        if (res.status === 403) {
-          throw new Error(
-            "list_qr_codes requires a Developer plan API key."
-          );
-        }
-
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({})) as Record<string, unknown>;
-          throw new Error(`QR API returned ${res.status}: ${String(data["error"] ?? res.statusText)}`);
-        }
-
-        const raw = (await res.json()) as {
-          data:        unknown[];
-          pagination?: { page: number; limit: number; total: number };
-          total?:      number;
-          page?:       number;
-          limit?:      number;
-        };
-        const { page: listPage, total: listTotal } = normalizeListPagination(raw);
-
-        type QrRow = { id: string; name: string; type: string; isDynamic?: boolean }
-        const summary = (raw.data as QrRow[])
-          .slice(0, 20)
-          .map((qr) => `• [${qr.id}] ${qr.name} (${qr.type})${qr.isDynamic ? " [dynamic]" : ""}`)
-          .join("\n");
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text:
-                `QR codes (page ${listPage}, showing ${raw.data.length} of ${listTotal}):\n\n` +
-                (summary || "No QR codes found."),
-            },
-          ],
-        };
+      } catch (err) {
+        throw new Error(`Failed to reach QR API: ${String(err)}`);
       }
-    );
 
-    // Tool: get_analytics
-    server.tool(
-      "get_analytics",
-      "Get scan analytics for the authenticated user's QR codes. " +
-        "Optionally filter to a specific QR code by ID. " +
-        "Requires an authenticated API key (Developer plan).",
-      GetAnalyticsInput,
-      async ({ qrCodeId, timeRange = "30d" }) => {
-        const params = new URLSearchParams({ timeRange });
-        if (qrCodeId) params.set("qrCodeId", qrCodeId);
-
-        let res: globalThis.Response;
-        try {
-          res = await fetch(`${API_BASE}/api/v1/analytics?${params}`, {
-            headers: {
-              Authorization: `Bearer ${apiKey}`,
-              "User-Agent":  "theqrcode-mcp/1.1",
-            },
-          });
-        } catch (err) {
-          throw new Error(`Failed to reach QR API: ${String(err)}`);
-        }
-
-        if (res.status === 403) {
-          throw new Error(
-            "get_analytics requires a Developer plan API key."
-          );
-        }
-
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({})) as Record<string, unknown>;
-          throw new Error(`QR API returned ${res.status}: ${String(data["error"] ?? res.statusText)}`);
-        }
-
-        const data = await res.json() as Record<string, unknown>;
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Analytics (${timeRange}):\n\n${JSON.stringify(data, null, 2)}`,
-            },
-          ],
-        };
+      if (res.status === 403) {
+        throw new Error(
+          "list_qr_codes requires a Developer plan API key."
+        );
       }
-    );
-  }
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as Record<string, unknown>;
+        throw new Error(`QR API returned ${res.status}: ${String(data["error"] ?? res.statusText)}`);
+      }
+
+      const raw = (await res.json()) as {
+        data:        unknown[];
+        pagination?: { page: number; limit: number; total: number };
+        total?:      number;
+        page?:       number;
+        limit?:      number;
+      };
+      const { page: listPage, total: listTotal } = normalizeListPagination(raw);
+
+      type QrRow = { id: string; name: string; type: string; isDynamic?: boolean }
+      const summary = (raw.data as QrRow[])
+        .slice(0, 20)
+        .map((qr) => `• [${qr.id}] ${qr.name} (${qr.type})${qr.isDynamic ? " [dynamic]" : ""}`)
+        .join("\n");
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              `QR codes (page ${listPage}, showing ${raw.data.length} of ${listTotal}):\n\n` +
+              (summary || "No QR codes found."),
+          },
+        ],
+      };
+    }
+  );
+
+  // Tool: get_analytics
+  server.tool(
+    "get_analytics",
+    "Get scan analytics for the authenticated user's QR codes. " +
+      "Optionally filter to a specific QR code by ID. " +
+      "Requires an authenticated API key (Developer plan).",
+    GetAnalyticsInput,
+    async ({ qrCodeId, timeRange = "30d" }) => {
+      if (!isAuthenticated) {
+        throw new Error(
+          "get_analytics requires a Developer plan API key. Reconnect with an " +
+            "Authorization: Bearer <api key> header — keys at https://theqrcode.io/pricing."
+        );
+      }
+
+      const params = new URLSearchParams({ timeRange });
+      if (qrCodeId) params.set("qrCodeId", qrCodeId);
+
+      let res: globalThis.Response;
+      try {
+        res = await fetch(`${API_BASE}/api/v1/analytics?${params}`, {
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "User-Agent":  "theqrcode-mcp/1.1",
+          },
+        });
+      } catch (err) {
+        throw new Error(`Failed to reach QR API: ${String(err)}`);
+      }
+
+      if (res.status === 403) {
+        throw new Error(
+          "get_analytics requires a Developer plan API key."
+        );
+      }
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as Record<string, unknown>;
+        throw new Error(`QR API returned ${res.status}: ${String(data["error"] ?? res.statusText)}`);
+      }
+
+      const data = await res.json() as Record<string, unknown>;
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Analytics (${timeRange}):\n\n${JSON.stringify(data, null, 2)}`,
+          },
+        ],
+      };
+    }
+  );
 
   return server;
 }
@@ -398,6 +416,14 @@ app.use(express.json());
 // Health check
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", service: "theqrcode-mcp", version: "1.1.1" });
+});
+
+// Glama.ai ownership verification — HTTP challenge for mcp.theqrcode.io
+app.get("/.well-known/glama.json", (_req, res) => {
+  res.json({
+    $schema: "https://glama.ai/mcp/schemas/connector.json",
+    claim: "glama_claim_BiVRVGdfn0MbZmHGkoQMyLDWQsWIXfKI",
+  });
 });
 
 // MCP endpoint — stateless: new server + transport per request

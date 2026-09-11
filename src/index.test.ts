@@ -247,60 +247,60 @@ function createServer(apiKey: string | null): McpServer {
     }
   )
 
-  if (isAuthenticated) {
-    server.tool(
-      'list_qr_codes',
-      'List QR codes saved to the account.',
-      {
-        page:  z.number().int().min(1).optional(),
-        limit: z.number().int().min(1).max(100).optional(),
-        type:  z.enum(['url', 'wifi', 'contact', 'text', 'email']).optional(),
-      },
-      async ({ page = 1, limit = 20, type }) => {
-        const params = new URLSearchParams({ page: String(page), limit: String(limit) })
-        if (type) params.set('type', type)
-        const res = await fetch(`${API_BASE_MOCK}/api/v1/qr-codes?${params}`, {
-          headers: { Authorization: `Bearer ${apiKey}`, 'User-Agent': 'theqrcode-mcp/1.1' },
-        })
-        if (res.status === 403) throw new Error('list_qr_codes requires a Developer plan API key.')
-        if (!res.ok) throw new Error(`QR API returned ${res.status}`)
-        const raw = await res.json() as {
-          data:        unknown[]
-          pagination?: { page: number; limit: number; total: number }
-          page?:       number
-          total?:      number
-          limit?:      number
-        }
-        const { page: listPage, total: listTotal } = normalizeListPagination(raw)
-        return {
-          content: [{
-            type: 'text' as const,
-            text:   `QR codes (page ${listPage}, ${raw.data.length} of ${listTotal})`,
-          }],
-        }
+  server.tool(
+    'list_qr_codes',
+    'List QR codes saved to the account.',
+    {
+      page:  z.number().int().min(1).optional(),
+      limit: z.number().int().min(1).max(100).optional(),
+      type:  z.enum(['url', 'wifi', 'contact', 'text', 'email']).optional(),
+    },
+    async ({ page = 1, limit = 20, type }) => {
+      if (!isAuthenticated) throw new Error('list_qr_codes requires a Developer plan API key.')
+      const params = new URLSearchParams({ page: String(page), limit: String(limit) })
+      if (type) params.set('type', type)
+      const res = await fetch(`${API_BASE_MOCK}/api/v1/qr-codes?${params}`, {
+        headers: { Authorization: `Bearer ${apiKey}`, 'User-Agent': 'theqrcode-mcp/1.1' },
+      })
+      if (res.status === 403) throw new Error('list_qr_codes requires a Developer plan API key.')
+      if (!res.ok) throw new Error(`QR API returned ${res.status}`)
+      const raw = await res.json() as {
+        data:        unknown[]
+        pagination?: { page: number; limit: number; total: number }
+        page?:       number
+        total?:      number
+        limit?:      number
       }
-    )
+      const { page: listPage, total: listTotal } = normalizeListPagination(raw)
+      return {
+        content: [{
+          type: 'text' as const,
+          text:   `QR codes (page ${listPage}, ${raw.data.length} of ${listTotal})`,
+        }],
+      }
+    }
+  )
 
-    server.tool(
-      'get_analytics',
-      'Get scan analytics.',
-      {
-        qrCodeId:  z.string().optional(),
-        timeRange: z.enum(['1h', '1d', '7d', '30d', '90d', '1y']).optional(),
-      },
-      async ({ qrCodeId, timeRange = '30d' }) => {
-        const params = new URLSearchParams({ timeRange })
-        if (qrCodeId) params.set('qrCodeId', qrCodeId)
-        const res = await fetch(`${API_BASE_MOCK}/api/v1/analytics?${params}`, {
-          headers: { Authorization: `Bearer ${apiKey}`, 'User-Agent': 'theqrcode-mcp/1.1' },
-        })
-        if (res.status === 403) throw new Error('get_analytics requires a Developer plan API key.')
-        if (!res.ok) throw new Error(`QR API returned ${res.status}`)
-        const data = await res.json()
-        return { content: [{ type: 'text' as const, text: `Analytics (${timeRange}):\n\n${JSON.stringify(data, null, 2)}` }] }
-      }
-    )
-  }
+  server.tool(
+    'get_analytics',
+    'Get scan analytics.',
+    {
+      qrCodeId:  z.string().optional(),
+      timeRange: z.enum(['1h', '1d', '7d', '30d', '90d', '1y']).optional(),
+    },
+    async ({ qrCodeId, timeRange = '30d' }) => {
+      if (!isAuthenticated) throw new Error('get_analytics requires a Developer plan API key.')
+      const params = new URLSearchParams({ timeRange })
+      if (qrCodeId) params.set('qrCodeId', qrCodeId)
+      const res = await fetch(`${API_BASE_MOCK}/api/v1/analytics?${params}`, {
+        headers: { Authorization: `Bearer ${apiKey}`, 'User-Agent': 'theqrcode-mcp/1.1' },
+      })
+      if (res.status === 403) throw new Error('get_analytics requires a Developer plan API key.')
+      if (!res.ok) throw new Error(`QR API returned ${res.status}`)
+      const data = await res.json()
+      return { content: [{ type: 'text' as const, text: `Analytics (${timeRange}):\n\n${JSON.stringify(data, null, 2)}` }] }
+    }
+  )
 
   return server
 }
@@ -374,14 +374,29 @@ async function mcpCallTool(
 // ---------------------------------------------------------------------------
 
 describe('MCP tool availability', () => {
-  it('unauthenticated session only exposes generate_qr_code', async () => {
+  // Directory crawlers (Glama, MCP registries) probe tools/list without a key.
+  // The paid tools must be visible there, and refuse only when actually called.
+  it('unauthenticated session still advertises all three tools', async () => {
     const { url, server } = await startTestServer(null)
     try {
       const result = await mcpListTools(url)
       const names = result.result?.tools?.map((t: { name: string }) => t.name) ?? []
       expect(names).toContain('generate_qr_code')
-      expect(names).not.toContain('list_qr_codes')
-      expect(names).not.toContain('get_analytics')
+      expect(names).toContain('list_qr_codes')
+      expect(names).toContain('get_analytics')
+    } finally {
+      await stopServer(server)
+    }
+  })
+
+  it('unauthenticated call to a paid tool is refused with a plan message', async () => {
+    const { url, server } = await startTestServer(null)
+    try {
+      for (const tool of ['list_qr_codes', 'get_analytics']) {
+        const result = await mcpCallTool(url, tool, {})
+        const text = JSON.stringify(result)
+        expect(text).toContain('requires a Developer plan API key')
+      }
     } finally {
       await stopServer(server)
     }
