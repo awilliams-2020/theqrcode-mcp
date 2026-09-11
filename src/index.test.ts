@@ -25,6 +25,30 @@ function extractApiKey(headers: Record<string, string | undefined>): string | nu
   return null
 }
 
+function extractClientIP(headers: Record<string, string | undefined>): string | null {
+  const realIP = headers['x-real-ip']?.trim()
+  if (realIP) return realIP
+
+  const forwarded = headers['x-forwarded-for']
+  if (forwarded) {
+    const hops = forwarded.split(',')
+    return hops[hops.length - 1]!.trim() || null
+  }
+
+  return null
+}
+
+function apiHeaders(
+  clientIp: string | null,
+  extra?: Record<string, string>
+): Record<string, string> {
+  return {
+    'User-Agent': 'theqrcode-mcp/1.1',
+    ...(clientIp ? { 'X-Forwarded-For': clientIp } : {}),
+    ...extra,
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Unit tests: extractApiKey
 // ---------------------------------------------------------------------------
@@ -156,7 +180,7 @@ function normalizeListPagination(raw: {
   return { page, limit, total }
 }
 
-function createServer(apiKey: string | null): McpServer {
+function createServer(apiKey: string | null, clientIp: string | null = null): McpServer {
   const server          = new McpServer({ name: 'theqrcode-mcp', version: '1.1.0' })
   const isAuthenticated = apiKey !== null
 
@@ -198,10 +222,7 @@ function createServer(apiKey: string | null): McpServer {
         ? `${API_BASE_MOCK}/api/v1/qr-codes`
         : `${API_BASE_MOCK}/api/public/qr-codes`
 
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        'User-Agent':   'theqrcode-mcp/1.1',
-      }
+      const headers = apiHeaders(clientIp, { 'Content-Type': 'application/json' })
       if (isAuthenticated) headers['Authorization'] = `Bearer ${apiKey}`
 
       const res = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(body) })
@@ -260,7 +281,7 @@ function createServer(apiKey: string | null): McpServer {
       const params = new URLSearchParams({ page: String(page), limit: String(limit) })
       if (type) params.set('type', type)
       const res = await fetch(`${API_BASE_MOCK}/api/v1/qr-codes?${params}`, {
-        headers: { Authorization: `Bearer ${apiKey}`, 'User-Agent': 'theqrcode-mcp/1.1' },
+        headers: apiHeaders(clientIp, { Authorization: `Bearer ${apiKey}` }),
       })
       if (res.status === 403) throw new Error('list_qr_codes requires a Developer plan API key.')
       if (!res.ok) throw new Error(`QR API returned ${res.status}`)
@@ -293,7 +314,7 @@ function createServer(apiKey: string | null): McpServer {
       const params = new URLSearchParams({ timeRange })
       if (qrCodeId) params.set('qrCodeId', qrCodeId)
       const res = await fetch(`${API_BASE_MOCK}/api/v1/analytics?${params}`, {
-        headers: { Authorization: `Bearer ${apiKey}`, 'User-Agent': 'theqrcode-mcp/1.1' },
+        headers: apiHeaders(clientIp, { Authorization: `Bearer ${apiKey}` }),
       })
       if (res.status === 403) throw new Error('get_analytics requires a Developer plan API key.')
       if (!res.ok) throw new Error(`QR API returned ${res.status}`)
@@ -314,7 +335,7 @@ async function startTestServer(apiKey: string | null): Promise<{ url: string; se
   app.use(express.json())
 
   app.post('/mcp', async (req, res) => {
-    const mcpServer = createServer(apiKey)
+    const mcpServer = createServer(apiKey, extractClientIP(req.headers as Record<string, string | undefined>))
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined })
     res.on('close', () => { transport.close().catch(() => {}); mcpServer.close().catch(() => {}) })
     await mcpServer.connect(transport)
@@ -353,11 +374,12 @@ async function mcpListTools(baseUrl: string) {
 async function mcpCallTool(
   baseUrl: string,
   name: string,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  extraHeaders: Record<string, string> = {}
 ) {
   const res = await fetch(`${baseUrl}/mcp`, {
     method:  'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', ...extraHeaders },
     body: JSON.stringify({
       jsonrpc: '2.0', id: 3, method: 'tools/call',
       params: { name, arguments: args },
@@ -368,6 +390,104 @@ async function mcpCallTool(
   const raw = jsonLine ? jsonLine.slice(5) : text
   return JSON.parse(raw)
 }
+
+
+// ---------------------------------------------------------------------------
+// Tests: client IP forwarding
+//
+// Traefik terminates every real session at mcp.theqrcode.io and writes
+// x-real-ip / x-forwarded-for. Unless those are passed through to the QR API,
+// the outbound fetch carries no forwarded header, Next.js fills one in from the
+// peer socket, and every MCP user in the world collapses into one container IP
+// — one shared rate-limit bucket and one shared 24h block key.
+// ---------------------------------------------------------------------------
+
+describe('extractClientIP', () => {
+  it('prefers x-real-ip', () => {
+    expect(extractClientIP({ 'x-real-ip': '203.0.113.7', 'x-forwarded-for': '198.51.100.9' }))
+      .toBe('203.0.113.7')
+  })
+
+  it('takes the RIGHTMOST x-forwarded-for hop, not the client-prepended first', () => {
+    expect(extractClientIP({ 'x-forwarded-for': '1.2.3.4, 198.51.100.9' })).toBe('198.51.100.9')
+  })
+
+  it('trims surrounding whitespace', () => {
+    expect(extractClientIP({ 'x-real-ip': '  203.0.113.7  ' })).toBe('203.0.113.7')
+  })
+
+  it('returns null when no forwarded header is present', () => {
+    expect(extractClientIP({})).toBeNull()
+    expect(extractClientIP({ 'x-real-ip': '   ' })).toBeNull()
+  })
+})
+
+describe('apiHeaders', () => {
+  it('forwards the client IP when there is one', () => {
+    expect(apiHeaders('203.0.113.7')['X-Forwarded-For']).toBe('203.0.113.7')
+  })
+
+  it('omits the header entirely rather than asserting a guess', () => {
+    expect(apiHeaders(null)).not.toHaveProperty('X-Forwarded-For')
+  })
+
+  it('keeps the User-Agent and merges extras', () => {
+    const h = apiHeaders('203.0.113.7', { Authorization: 'Bearer k' })
+    expect(h['User-Agent']).toBe('theqrcode-mcp/1.1')
+    expect(h['Authorization']).toBe('Bearer k')
+  })
+})
+
+describe('client IP reaches the QR API', () => {
+  beforeEach(() => {
+    upstreamQueue.length = 0
+    upstreamCalls.length = 0
+  })
+
+  it('forwards the end user IP on an unauthenticated generate', async () => {
+    mockFetchOk(makeMockQrResponse({ id: undefined }))
+    const { url, server } = await startTestServer(null)
+    try {
+      await mcpCallTool(
+        url,
+        'generate_qr_code',
+        { type: 'url', name: 'test', content: 'https://example.com' },
+        { 'X-Real-IP': '203.0.113.7' }
+      )
+      const headers = upstreamCalls[0]?.opts?.headers as Record<string, string>
+      expect(headers['X-Forwarded-For']).toBe('203.0.113.7')
+    } finally {
+      await stopServer(server)
+    }
+  })
+
+  it('forwards the end user IP on an authenticated tool call', async () => {
+    mockFetchOk({ data: [], pagination: { page: 1, limit: 20, total: 0 } })
+    const { url, server } = await startTestServer('tqc_sk_live_mykey')
+    try {
+      await mcpCallTool(url, 'list_qr_codes', {}, { 'X-Real-IP': '198.51.100.9' })
+      const headers = upstreamCalls[0]?.opts?.headers as Record<string, string>
+      expect(headers['X-Forwarded-For']).toBe('198.51.100.9')
+      expect(headers['Authorization']).toBe('Bearer tqc_sk_live_mykey')
+    } finally {
+      await stopServer(server)
+    }
+  })
+
+  it('sends no forwarded header when the caller did not come through Traefik', async () => {
+    mockFetchOk(makeMockQrResponse({ id: undefined }))
+    const { url, server } = await startTestServer(null)
+    try {
+      await mcpCallTool(url, 'generate_qr_code', {
+        type: 'url', name: 'test', content: 'https://example.com',
+      })
+      const headers = upstreamCalls[0]?.opts?.headers as Record<string, string>
+      expect(headers).not.toHaveProperty('X-Forwarded-For')
+    } finally {
+      await stopServer(server)
+    }
+  })
+})
 
 // ---------------------------------------------------------------------------
 // Tests: tool availability by auth state

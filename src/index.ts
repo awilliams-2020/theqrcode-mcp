@@ -22,6 +22,63 @@ function extractApiKey(req: Request): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// Client IP forwarding
+// ---------------------------------------------------------------------------
+
+/**
+ * The end user's address, or null when this request did not arrive through Traefik.
+ *
+ * This server is published at `mcp.theqrcode.io`, so Traefik terminates every real
+ * session and writes `x-real-ip` / `x-forwarded-for` from the TCP peer after deleting
+ * the client's own copies. Those two headers are therefore trustworthy here, and they
+ * are the ONLY ones that are — same trust boundary as the app's `src/lib/request-ip.ts`,
+ * which this deliberately mirrors. Keep the two in step.
+ *
+ * `x-forwarded-for` is a list where every hop appends, so the rightmost entry is the
+ * one written by the proxy nearest us; reading `[0]` would read whatever the client
+ * chose to prepend.
+ */
+function extractClientIP(req: Request): string | null {
+  const realIP = (req.headers["x-real-ip"] as string | undefined)?.trim();
+  if (realIP) return realIP;
+
+  const forwarded = req.headers["x-forwarded-for"] as string | undefined;
+  if (forwarded) {
+    const hops = forwarded.split(",");
+    return hops[hops.length - 1]!.trim() || null;
+  }
+
+  return null;
+}
+
+/**
+ * Headers for a call out to the QR API.
+ *
+ * `X-Forwarded-For` is what makes the end user visible downstream. Without it the
+ * API sees only this container: the outbound fetch carries no forwarded header, so
+ * Next.js synthesises one from the peer socket and every MCP user in the world
+ * arrives as `172.24.0.3` on `theqrcode_internal`. That collapses them into a single
+ * rate-limit fingerprint (`rl:pub:sliding:172.24.0.3:<ua hash>`) sharing one 100/hr
+ * budget, puts them one shared `rl:pub:blocked:172.24.0.3` away from a 24h outage of
+ * the whole anonymous MCP surface, and lands every server-side Matomo event with a
+ * docker IP and no geography.
+ *
+ * Omitted when `clientIp` is null — a caller that did not come through Traefik has no
+ * address worth asserting, and forwarding a guess would be worse than forwarding
+ * nothing.
+ */
+function apiHeaders(
+  clientIp: string | null,
+  extra?: Record<string, string>
+): Record<string, string> {
+  return {
+    "User-Agent": "theqrcode-mcp/1.1",
+    ...(clientIp ? { "X-Forwarded-For": clientIp } : {}),
+    ...extra,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Tool parameter schemas
 // ---------------------------------------------------------------------------
 
@@ -145,7 +202,7 @@ function normalizeListPagination(raw: {
 // Called once per HTTP request so stateless transport works correctly.
 // ---------------------------------------------------------------------------
 
-function createServer(apiKey: string | null): McpServer {
+function createServer(apiKey: string | null, clientIp: string | null): McpServer {
   const server          = new McpServer({ name: "theqrcode-mcp", version: "1.1.1" });
   const isAuthenticated = apiKey !== null;
 
@@ -193,10 +250,7 @@ function createServer(apiKey: string | null): McpServer {
         ? `${API_BASE}/api/v1/qr-codes`
         : `${API_BASE}/api/public/qr-codes`;
 
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-        "User-Agent":   "theqrcode-mcp/1.1",
-      };
+      const headers = apiHeaders(clientIp, { "Content-Type": "application/json" });
       if (isAuthenticated) headers["Authorization"] = `Bearer ${apiKey}`;
 
       let res: globalThis.Response;
@@ -301,10 +355,7 @@ function createServer(apiKey: string | null): McpServer {
       let res: globalThis.Response;
       try {
         res = await fetch(`${API_BASE}/api/v1/qr-codes?${params}`, {
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "User-Agent":  "theqrcode-mcp/1.1",
-          },
+          headers: apiHeaders(clientIp, { Authorization: `Bearer ${apiKey}` }),
         });
       } catch (err) {
         throw new Error(`Failed to reach QR API: ${String(err)}`);
@@ -370,10 +421,7 @@ function createServer(apiKey: string | null): McpServer {
       let res: globalThis.Response;
       try {
         res = await fetch(`${API_BASE}/api/v1/analytics?${params}`, {
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "User-Agent":  "theqrcode-mcp/1.1",
-          },
+          headers: apiHeaders(clientIp, { Authorization: `Bearer ${apiKey}` }),
         });
       } catch (err) {
         throw new Error(`Failed to reach QR API: ${String(err)}`);
@@ -428,8 +476,9 @@ app.get("/.well-known/glama.json", (_req, res) => {
 
 // MCP endpoint — stateless: new server + transport per request
 async function handleMcp(req: Request, res: Response): Promise<void> {
-  const apiKey = extractApiKey(req);
-  const server = createServer(apiKey);
+  const apiKey   = extractApiKey(req);
+  const clientIp = extractClientIP(req);
+  const server   = createServer(apiKey, clientIp);
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless mode
   });
