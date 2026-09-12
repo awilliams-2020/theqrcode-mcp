@@ -1,5 +1,7 @@
 # TheQRCode.io MCP Server
 
+[![Listed on mcpservers.org](https://mcpservers.org/badge.svg)](https://mcpservers.org/servers/theqrcode-io-mcp)
+
 Generate QR codes — and read their scan analytics — from Claude, Cursor, or any MCP client.
 
 **Remote HTTP server. Nothing to install.** No npm, no Docker, no Python. Point your client at one
