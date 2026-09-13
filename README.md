@@ -107,13 +107,13 @@ code.
 
 ## Plans
 
-| | Anonymous | Developer ($19/mo) |
-|---|---|---|
-| `generate_qr_code` | ✅ url, wifi, contact, text | ✅ + email |
-| Codes saved to account | ❌ 24h preview link | ✅ permanent |
-| `list_qr_codes` | ❌ | ✅ |
-| `get_analytics` | ❌ | ✅ |
-| Rate limit | 100/hr per IP | 5,000/hr per key |
+| | Anonymous | Developer ($19/mo) | Pro ($29/mo) |
+|---|---|---|---|
+| `generate_qr_code` | ✅ url, wifi, contact, text | ✅ + email | ✅ + email |
+| Codes saved to account | ❌ 24h preview link | ✅ permanent | ✅ permanent |
+| `list_qr_codes` | ❌ | ✅ | ❌ |
+| `get_analytics` | ❌ | ✅ | ❌ |
+| Rate limit | 100/hr per IP | 5,000/hr per key | 5,000/hr per key |
 
 API keys: <https://theqrcode.io/pricing>
 

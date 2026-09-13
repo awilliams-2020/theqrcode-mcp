@@ -38,6 +38,13 @@ function extractClientIP(headers: Record<string, string | undefined>): string | 
   return null
 }
 
+const MCP_TOOL_HEADER = 'X-MCP-Tool'
+
+async function forbiddenMessage(res: { json: () => Promise<unknown> }, fallback: string): Promise<string> {
+  const data = await res.json().catch(() => ({})) as Record<string, unknown>
+  return typeof data['error'] === 'string' ? data['error'] : fallback
+}
+
 function apiHeaders(
   clientIp: string | null,
   extra?: Record<string, string>
@@ -281,9 +288,9 @@ function createServer(apiKey: string | null, clientIp: string | null = null): Mc
       const params = new URLSearchParams({ page: String(page), limit: String(limit) })
       if (type) params.set('type', type)
       const res = await fetch(`${API_BASE_MOCK}/api/v1/qr-codes?${params}`, {
-        headers: apiHeaders(clientIp, { Authorization: `Bearer ${apiKey}` }),
+        headers: apiHeaders(clientIp, { Authorization: `Bearer ${apiKey}`, [MCP_TOOL_HEADER]: 'list_qr_codes' }),
       })
-      if (res.status === 403) throw new Error('list_qr_codes requires a Developer plan API key.')
+      if (res.status === 403) throw new Error(await forbiddenMessage(res, 'list_qr_codes requires a Developer plan API key.'))
       if (!res.ok) throw new Error(`QR API returned ${res.status}`)
       const raw = await res.json() as {
         data:        unknown[]
@@ -314,9 +321,9 @@ function createServer(apiKey: string | null, clientIp: string | null = null): Mc
       const params = new URLSearchParams({ timeRange })
       if (qrCodeId) params.set('qrCodeId', qrCodeId)
       const res = await fetch(`${API_BASE_MOCK}/api/v1/analytics?${params}`, {
-        headers: apiHeaders(clientIp, { Authorization: `Bearer ${apiKey}` }),
+        headers: apiHeaders(clientIp, { Authorization: `Bearer ${apiKey}`, [MCP_TOOL_HEADER]: 'get_analytics' }),
       })
-      if (res.status === 403) throw new Error('get_analytics requires a Developer plan API key.')
+      if (res.status === 403) throw new Error(await forbiddenMessage(res, 'get_analytics requires a Developer plan API key.'))
       if (!res.ok) throw new Error(`QR API returned ${res.status}`)
       const data = await res.json()
       return { content: [{ type: 'text' as const, text: `Analytics (${timeRange}):\n\n${JSON.stringify(data, null, 2)}` }] }
@@ -723,6 +730,41 @@ describe('generate_qr_code — error handling', () => {
 // ---------------------------------------------------------------------------
 // Tests: list_qr_codes and get_analytics
 // ---------------------------------------------------------------------------
+
+describe('extended tools are marked for the Developer-plan gate', () => {
+  // theqrcode.io enforces "Developer only" for these two tools by the X-MCP-Tool
+  // header: without it the call is indistinguishable from a Pro key's plain REST call.
+  beforeEach(() => {
+    upstreamQueue.length = 0
+    upstreamCalls.length = 0
+  })
+
+  it.each([
+    ['list_qr_codes', { data: [], total: 0, page: 1, limit: 20 }],
+    ['get_analytics', { totalScans: 0 }],
+  ])('%s sends X-MCP-Tool naming the tool', async (tool, body) => {
+    mockFetchOk(body)
+    const { url, server } = await startTestServer('tqc_sk_live_dev')
+    try {
+      await mcpCallTool(url, tool, {})
+      const headers = upstreamCalls[0].opts?.headers as Record<string, string>
+      expect(headers['X-MCP-Tool']).toBe(tool)
+    } finally {
+      await stopServer(server)
+    }
+  })
+
+  it('surfaces the API\'s own 403 reason', async () => {
+    mockFetchError(403, { error: 'The list_qr_codes and get_analytics MCP tools require the Developer plan.' })
+    const { url, server } = await startTestServer('tqc_sk_live_pro')
+    try {
+      const result = await mcpCallTool(url, 'get_analytics', {})
+      expect(JSON.stringify(result)).toContain('MCP tools require the Developer plan')
+    } finally {
+      await stopServer(server)
+    }
+  })
+})
 
 describe('list_qr_codes', () => {
   beforeEach(() => {

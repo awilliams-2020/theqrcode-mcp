@@ -78,6 +78,19 @@ function apiHeaders(
   };
 }
 
+/**
+ * Names the extended tool behind an upstream call. theqrcode.io only gates on it for
+ * the routes behind list_qr_codes and get_analytics: those tools are Developer-plan,
+ * while the same REST routes stay open to Pro keys called directly.
+ */
+const MCP_TOOL_HEADER = "X-MCP-Tool";
+
+/** The API's own reason for a 403 (plan, permission, sandbox), or a fallback. */
+async function forbiddenMessage(res: globalThis.Response, fallback: string): Promise<string> {
+  const data = await res.json().catch(() => ({})) as Record<string, unknown>;
+  return typeof data["error"] === "string" ? data["error"] : fallback;
+}
+
 // ---------------------------------------------------------------------------
 // Tool parameter schemas
 // ---------------------------------------------------------------------------
@@ -355,16 +368,14 @@ function createServer(apiKey: string | null, clientIp: string | null): McpServer
       let res: globalThis.Response;
       try {
         res = await fetch(`${API_BASE}/api/v1/qr-codes?${params}`, {
-          headers: apiHeaders(clientIp, { Authorization: `Bearer ${apiKey}` }),
+          headers: apiHeaders(clientIp, { Authorization: `Bearer ${apiKey}`, [MCP_TOOL_HEADER]: "list_qr_codes" }),
         });
       } catch (err) {
         throw new Error(`Failed to reach QR API: ${String(err)}`);
       }
 
       if (res.status === 403) {
-        throw new Error(
-          "list_qr_codes requires a Developer plan API key."
-        );
+        throw new Error(await forbiddenMessage(res, "list_qr_codes requires a Developer plan API key."));
       }
 
       if (!res.ok) {
@@ -421,16 +432,14 @@ function createServer(apiKey: string | null, clientIp: string | null): McpServer
       let res: globalThis.Response;
       try {
         res = await fetch(`${API_BASE}/api/v1/analytics?${params}`, {
-          headers: apiHeaders(clientIp, { Authorization: `Bearer ${apiKey}` }),
+          headers: apiHeaders(clientIp, { Authorization: `Bearer ${apiKey}`, [MCP_TOOL_HEADER]: "get_analytics" }),
         });
       } catch (err) {
         throw new Error(`Failed to reach QR API: ${String(err)}`);
       }
 
       if (res.status === 403) {
-        throw new Error(
-          "get_analytics requires a Developer plan API key."
-        );
+        throw new Error(await forbiddenMessage(res, "get_analytics requires a Developer plan API key."));
       }
 
       if (!res.ok) {
