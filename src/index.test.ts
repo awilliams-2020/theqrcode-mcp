@@ -50,7 +50,7 @@ function apiHeaders(
   extra?: Record<string, string>
 ): Record<string, string> {
   return {
-    'User-Agent': 'theqrcode-mcp/1.1',
+    'User-Agent': 'theqrcode-mcp/1.2',
     ...(clientIp ? { 'X-Forwarded-For': clientIp } : {}),
     ...extra,
   }
@@ -230,7 +230,10 @@ function createServer(apiKey: string | null, clientIp: string | null = null): Mc
         : `${API_BASE_MOCK}/api/public/qr-codes`
 
       const headers = apiHeaders(clientIp, { 'Content-Type': 'application/json' })
-      if (isAuthenticated) headers['Authorization'] = `Bearer ${apiKey}`
+      if (isAuthenticated) {
+        headers['Authorization'] = `Bearer ${apiKey}`
+        headers[MCP_TOOL_HEADER] = 'generate_qr_code'
+      }
 
       const res = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(body) })
 
@@ -241,6 +244,10 @@ function createServer(apiKey: string | null, clientIp: string | null = null): Mc
       }
       if (res.status === 429) {
         const retryAfter = res.headers.get('Retry-After') ?? '60'
+        if (isAuthenticated) {
+          const data = await res.json().catch(() => ({})) as Record<string, unknown>
+          throw new Error(typeof data['error'] === 'string' ? data['error'] : `Rate limit reached. Please retry after ${retryAfter} seconds.`)
+        }
         throw new Error(`Rate limit reached. Please retry after ${retryAfter} seconds.`)
       }
       if (!res.ok) {
@@ -440,7 +447,7 @@ describe('apiHeaders', () => {
 
   it('keeps the User-Agent and merges extras', () => {
     const h = apiHeaders('203.0.113.7', { Authorization: 'Bearer k' })
-    expect(h['User-Agent']).toBe('theqrcode-mcp/1.1')
+    expect(h['User-Agent']).toBe('theqrcode-mcp/1.2')
     expect(h['Authorization']).toBe('Bearer k')
   })
 })
@@ -740,15 +747,39 @@ describe('extended tools are marked for the Developer-plan gate', () => {
   })
 
   it.each([
-    ['list_qr_codes', { data: [], total: 0, page: 1, limit: 20 }],
-    ['get_analytics', { totalScans: 0 }],
-  ])('%s sends X-MCP-Tool naming the tool', async (tool, body) => {
+    ['generate_qr_code', makeMockQrResponse(), { type: 'url', content: 'https://example.com' }],
+    ['list_qr_codes', { data: [], total: 0, page: 1, limit: 20 }, {}],
+    ['get_analytics', { totalScans: 0 }, {}],
+  ])('%s sends X-MCP-Tool naming the tool', async (tool, body, args) => {
     mockFetchOk(body)
     const { url, server } = await startTestServer('tqc_sk_live_dev')
     try {
-      await mcpCallTool(url, tool, {})
+      await mcpCallTool(url, tool, args)
       const headers = upstreamCalls[0].opts?.headers as Record<string, string>
       expect(headers['X-MCP-Tool']).toBe(tool)
+    } finally {
+      await stopServer(server)
+    }
+  })
+
+  it('an anonymous generate is not marked as MCP-authenticated', async () => {
+    mockFetchOk(makeMockQrResponse())
+    const { url, server } = await startTestServer(null)
+    try {
+      await mcpCallTool(url, 'generate_qr_code', { type: 'url', content: 'https://example.com' })
+      const headers = upstreamCalls[0].opts?.headers as Record<string, string>
+      expect(headers).not.toHaveProperty('X-MCP-Tool')
+    } finally {
+      await stopServer(server)
+    }
+  })
+
+  it('surfaces the plan MCP rate limit message on an authenticated 429', async () => {
+    mockFetchError(429, { error: 'MCP rate limit exceeded (500 requests/hour on your plan). Try again in 60 seconds.' })
+    const { url, server } = await startTestServer('tqc_sk_live_pro')
+    try {
+      const result = await mcpCallTool(url, 'generate_qr_code', { type: 'url', content: 'https://example.com' })
+      expect(JSON.stringify(result)).toContain('MCP rate limit exceeded (500 requests/hour')
     } finally {
       await stopServer(server)
     }

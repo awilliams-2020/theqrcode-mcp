@@ -1,6 +1,6 @@
 {
   "name": "theqrcode-mcp-server",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "description": "MCP server for theqrcode.io \u2014 generate QR codes from Claude, Cursor, and any MCP-compatible AI agent",
   "private": true,
   "type": "module",

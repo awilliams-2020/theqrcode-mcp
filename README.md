@@ -113,7 +113,9 @@ code.
 | Codes saved to account | ❌ 24h preview link | ✅ permanent | ✅ permanent |
 | `list_qr_codes` | ❌ | ✅ | ❌ |
 | `get_analytics` | ❌ | ✅ | ❌ |
-| Rate limit | 100/hr per IP | 5,000/hr per key | 5,000/hr per key |
+| MCP rate limit | 100/hr per IP | 2,000/hr per key | 500/hr per key |
+
+MCP calls also count toward the key's 5,000/hr REST API limit; the MCP limit is a cap within it.
 
 API keys: <https://theqrcode.io/pricing>
 

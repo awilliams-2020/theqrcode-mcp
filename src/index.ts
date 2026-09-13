@@ -72,18 +72,27 @@ function apiHeaders(
   extra?: Record<string, string>
 ): Record<string, string> {
   return {
-    "User-Agent": "theqrcode-mcp/1.1",
+    "User-Agent": "theqrcode-mcp/1.2",
     ...(clientIp ? { "X-Forwarded-For": clientIp } : {}),
     ...extra,
   };
 }
 
 /**
- * Names the extended tool behind an upstream call. theqrcode.io only gates on it for
- * the routes behind list_qr_codes and get_analytics: those tools are Developer-plan,
+ * Sent on every authenticated upstream call, naming the tool. It tells theqrcode.io the
+ * call is MCP rather than plain REST, which applies the plan's MCP hourly limit
+ * (Developer 2,000, Pro 500) and keeps list_qr_codes / get_analytics Developer-only —
  * while the same REST routes stay open to Pro keys called directly.
  */
 const MCP_TOOL_HEADER = "X-MCP-Tool";
+
+/** The API's own reason for a 429 (MCP or API limit), or a generic message. */
+async function rateLimitMessage(res: globalThis.Response, retryAfter: string): Promise<string> {
+  const data = await res.json().catch(() => ({})) as Record<string, unknown>;
+  return typeof data["error"] === "string"
+    ? data["error"]
+    : `Rate limit reached for your API key. Please retry after ${retryAfter} seconds.`;
+}
 
 /** The API's own reason for a 403 (plan, permission, sandbox), or a fallback. */
 async function forbiddenMessage(res: globalThis.Response, fallback: string): Promise<string> {
@@ -216,7 +225,7 @@ function normalizeListPagination(raw: {
 // ---------------------------------------------------------------------------
 
 function createServer(apiKey: string | null, clientIp: string | null): McpServer {
-  const server          = new McpServer({ name: "theqrcode-mcp", version: "1.1.2" });
+  const server          = new McpServer({ name: "theqrcode-mcp", version: "1.2.0" });
   const isAuthenticated = apiKey !== null;
 
   // -------------------------------------------------------------------------
@@ -264,7 +273,10 @@ function createServer(apiKey: string | null, clientIp: string | null): McpServer
         : `${API_BASE}/api/public/qr-codes`;
 
       const headers = apiHeaders(clientIp, { "Content-Type": "application/json" });
-      if (isAuthenticated) headers["Authorization"] = `Bearer ${apiKey}`;
+      if (isAuthenticated) {
+        headers["Authorization"] = `Bearer ${apiKey}`;
+        headers[MCP_TOOL_HEADER] = "generate_qr_code";
+      }
 
       let res: globalThis.Response;
       try {
@@ -288,9 +300,12 @@ function createServer(apiKey: string | null, clientIp: string | null): McpServer
 
       if (res.status === 429) {
         const retryAfter = res.headers.get("Retry-After") ?? "60";
-        const limitType  = isAuthenticated ? "your API key" : "the public API (100 req/hr per IP)";
+        if (isAuthenticated) {
+          // The API says which limit fired (the plan's MCP limit or the key's API limit).
+          throw new Error(await rateLimitMessage(res, retryAfter));
+        }
         throw new Error(
-          `Rate limit reached for ${limitType}. Please retry after ${retryAfter} seconds.`
+          `Rate limit reached for the public API (100 req/hr per IP). Please retry after ${retryAfter} seconds.`
         );
       }
 
@@ -472,7 +487,7 @@ app.use(express.json());
 
 // Health check
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok", service: "theqrcode-mcp", version: "1.1.2" });
+  res.json({ status: "ok", service: "theqrcode-mcp", version: "1.2.0" });
 });
 
 // Glama.ai ownership verification — HTTP challenge for mcp.theqrcode.io
