@@ -15,7 +15,7 @@ const PORT     = process.env.PORT ?? 3001;
  * Accepts:  Authorization: Bearer qr_...  (the format ApiKeyManager issues)
  * Returns null when no key is present (public / unauthenticated session).
  */
-function extractApiKey(req: Request): string | null {
+export function extractApiKey(req: Request): string | null {
   const auth = (req.headers["authorization"] as string | undefined) ?? "";
   if (auth.startsWith("Bearer ")) return auth.slice(7).trim() || null;
   return null;
@@ -38,7 +38,7 @@ function extractApiKey(req: Request): string | null {
  * one written by the proxy nearest us; reading `[0]` would read whatever the client
  * chose to prepend.
  */
-function extractClientIP(req: Request): string | null {
+export function extractClientIP(req: Request): string | null {
   const realIP = (req.headers["x-real-ip"] as string | undefined)?.trim();
   if (realIP) return realIP;
 
@@ -67,7 +67,7 @@ function extractClientIP(req: Request): string | null {
  * address worth asserting, and forwarding a guess would be worse than forwarding
  * nothing.
  */
-function apiHeaders(
+export function apiHeaders(
   clientIp: string | null,
   extra?: Record<string, string>
 ): Record<string, string> {
@@ -218,7 +218,7 @@ const GetAnalyticsInput = {
 };
 
 /** POST /api/v1/qr-codes requires `name`; used when the tool omits it. */
-function defaultQrNameForMcp(type: string, content: string): string {
+export function defaultQrNameForMcp(type: string, content: string): string {
   const max     = 100;
   const oneLine = content.replace(/\s+/g, " ").trim();
   const snippet = oneLine.length <= max ? oneLine : `${oneLine.slice(0, max - 1)}…`;
@@ -228,7 +228,7 @@ function defaultQrNameForMcp(type: string, content: string): string {
 /**
  * Public POST returns `imageUrl`; v1 POST may omit it and only set `shortUrl` (dynamic QRs).
  */
-function formatShareLinkLine(
+export function formatShareLinkLine(
   data: { imageUrl?: string; shortUrl?: string | null },
   isAuthenticated: boolean
 ): string {
@@ -243,7 +243,7 @@ function formatShareLinkLine(
 }
 
 /** GET /api/v1/qr-codes returns totals under `pagination`; tolerate a flat legacy shape. */
-function normalizeListPagination(raw: {
+export function normalizeListPagination(raw: {
   data:    unknown[];
   pagination?: { page: number; limit: number; total: number };
   page?:   number;
@@ -262,7 +262,7 @@ function normalizeListPagination(raw: {
 // Called once per HTTP request so stateless transport works correctly.
 // ---------------------------------------------------------------------------
 
-function createServer(apiKey: string | null, clientIp: string | null): McpServer {
+export function createServer(apiKey: string | null, clientIp: string | null): McpServer {
   const server          = new McpServer({ name: "theqrcode-mcp", version: "1.3.0" });
   const isAuthenticated = apiKey !== null;
 
@@ -610,10 +610,14 @@ app.post("/mcp",   handleMcp);
 app.get("/mcp",    handleMcp);
 app.delete("/mcp", handleMcp);
 
-app.listen(PORT, () => {
-  console.log(`theqrcode MCP server listening on port ${PORT}`);
-  console.log(`  Health:   http://localhost:${PORT}/health`);
-  console.log(`  MCP:      http://localhost:${PORT}/mcp`);
-  console.log(`  API base: ${API_BASE}`);
-  console.log(`  Auth:     Bearer token via Authorization header`);
-});
+// Not under test: the suite imports this module for the REAL createServer and
+// helpers, and a listen on import would leave a port bound for the whole run.
+if (process.env.NODE_ENV !== "test") {
+  app.listen(PORT, () => {
+    console.log(`theqrcode MCP server listening on port ${PORT}`);
+    console.log(`  Health:   http://localhost:${PORT}/health`);
+    console.log(`  MCP:      http://localhost:${PORT}/mcp`);
+    console.log(`  API base: ${API_BASE}`);
+    console.log(`  Auth:     Bearer token via Authorization header`);
+  });
+}

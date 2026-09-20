@@ -12,49 +12,6 @@ import express from 'express'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import type { Server } from 'http'
-import { z } from 'zod'
-
-// ---------------------------------------------------------------------------
-// Inline the helpers we want to test (copied from index.ts so we can test
-// them without starting a server)
-// ---------------------------------------------------------------------------
-
-function extractApiKey(headers: Record<string, string | undefined>): string | null {
-  const auth = headers['authorization'] ?? ''
-  if (auth.startsWith('Bearer ')) return auth.slice(7).trim() || null
-  return null
-}
-
-function extractClientIP(headers: Record<string, string | undefined>): string | null {
-  const realIP = headers['x-real-ip']?.trim()
-  if (realIP) return realIP
-
-  const forwarded = headers['x-forwarded-for']
-  if (forwarded) {
-    const hops = forwarded.split(',')
-    return hops[hops.length - 1]!.trim() || null
-  }
-
-  return null
-}
-
-const MCP_TOOL_HEADER = 'X-MCP-Tool'
-
-async function forbiddenMessage(res: { json: () => Promise<unknown> }, fallback: string): Promise<string> {
-  const data = await res.json().catch(() => ({})) as Record<string, unknown>
-  return typeof data['error'] === 'string' ? data['error'] : fallback
-}
-
-function apiHeaders(
-  clientIp: string | null,
-  extra?: Record<string, string>
-): Record<string, string> {
-  return {
-    'User-Agent': 'theqrcode-mcp/1.2',
-    ...(clientIp ? { 'X-Forwarded-For': clientIp } : {}),
-    ...extra,
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Unit tests: extractApiKey
@@ -94,6 +51,36 @@ describe('extractApiKey', () => {
 // the production logic — keeping tests tightly coupled to the real behaviour.
 
 const API_BASE_MOCK = 'http://mock-api'
+
+/**
+ * The SHIPPING server, not a copy of it.
+ *
+ * This file used to re-implement createServer and every helper it needed, so
+ * its 41 assertions ran against a replica that drifted from the real thing: the
+ * User-Agent assertion still read 1.2 after the server shipped 1.3, and a test
+ * asserting that `email` required an API key kept passing for hours after that
+ * gate was removed. A test that cannot fail when the product changes is not a
+ * test.
+ *
+ * `index.ts` reads QR_API_BASE once, at import, so it is pointed at the mock
+ * first; its `app.listen` is skipped under NODE_ENV=test, which vitest sets.
+ */
+process.env.QR_API_BASE = API_BASE_MOCK
+const {
+  createServer,
+  apiHeaders,
+  formatShareLinkLine,
+  normalizeListPagination,
+  defaultQrNameForMcp,
+  extractApiKey: extractApiKeyFromRequest,
+  extractClientIP: extractClientIPFromRequest,
+} = await import('./index.js')
+
+/** The real pair take an express Request; the tests speak in header bags. */
+const extractApiKey = (headers: Record<string, string | undefined>) =>
+  extractApiKeyFromRequest({ headers } as never)
+const extractClientIP = (headers: Record<string, string | undefined>) =>
+  extractClientIPFromRequest({ headers } as never)
 
 // Upstream response queue.
 // Only non-localhost fetch calls (MCP server → upstream API) consume from this queue.
@@ -147,202 +134,6 @@ function mockFetchError(status: number, body: unknown = { error: 'error' }) {
     headers: { get: (h: string) => h === 'Retry-After' ? '60' : null },
     json:    async () => body,
   })
-}
-
-// ---------------------------------------------------------------------------
-// Reconstruct the createServer factory (mirrors index.ts logic)
-// so tests don't depend on the listen side-effect
-// ---------------------------------------------------------------------------
-
-function defaultQrNameForMcp(type: string, content: string): string {
-  const max     = 100
-  const oneLine = content.replace(/\s+/g, ' ').trim()
-  const snippet = oneLine.length <= max ? oneLine : `${oneLine.slice(0, max - 1)}…`
-  return `MCP ${type}: ${snippet}`
-}
-
-function formatShareLinkLine(
-  data: { imageUrl?: string; shortUrl?: string | null },
-  isAuthenticated: boolean
-): string {
-  if (data.imageUrl) return `Hosted URL: ${data.imageUrl}`
-  if (data.shortUrl) return `Short URL (tracking): ${data.shortUrl}`
-  if (isAuthenticated) {
-    return 'Hosted URL: not returned by the API for this QR code; use the PNG above or your dashboard.'
-  }
-  return 'Hosted URL: not provided.'
-}
-
-function normalizeListPagination(raw: {
-  data:        unknown[]
-  pagination?: { page: number; limit: number; total: number }
-  page?:       number
-  limit?:      number
-  total?:      number
-}): { page: number; limit: number; total: number } {
-  const p     = raw.pagination
-  const page  = p?.page ?? raw.page ?? 1
-  const limit = p?.limit ?? raw.limit ?? 20
-  const total = p?.total ?? raw.total ?? raw.data.length
-  return { page, limit, total }
-}
-
-function createServer(apiKey: string | null, clientIp: string | null = null): McpServer {
-  const server          = new McpServer({ name: 'theqrcode-mcp', version: '1.1.0' })
-  const isAuthenticated = apiKey !== null
-
-  server.tool(
-    'generate_qr_code',
-    'Generate a QR code image.',
-    {
-      type:       z.enum(['url', 'wifi', 'contact', 'text', 'email']),
-      name:       z.string().min(1).max(200).optional(),
-      content:    z.string().min(1),
-      size:       z.number().int().min(64).max(1024).optional(),
-      darkColor:  z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
-      lightColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
-      format:     z.enum(['png', 'svg', 'pdf']).optional(),
-    },
-    async ({ type, content, name, size, darkColor, lightColor, format }) => {
-      // Every QR type is keyless (2026-09-20) — `email` is `mailto:` + the content,
-      // so the gate was removed rather than enforced. What a key buys here is svg
-      // and pdf output, which is metered per key because it is the expensive path.
-      if (!isAuthenticated && format && format !== 'png') {
-        throw new Error(
-          `format "${format}" requires an API key, because vector and PDF rendering is ` +
-            'metered per key rather than per IP.'
-        )
-      }
-      const body: Record<string, unknown> = { type, content }
-      const settings: Record<string, unknown> = {}
-      if (isAuthenticated) {
-        const trimmed = name?.trim()
-        body.name =
-          trimmed && trimmed.length > 0 ? trimmed : defaultQrNameForMcp(type, content)
-      }
-      if (size !== undefined) settings.size = size
-      if (darkColor || lightColor) {
-        const color: Record<string, string> = {}
-        if (darkColor)  color.dark  = darkColor
-        if (lightColor) color.light = lightColor
-        settings.color = color
-      }
-      if (Object.keys(settings).length > 0) body.settings = settings
-      if (isAuthenticated && format) body.format = format
-
-      const endpoint = isAuthenticated
-        ? `${API_BASE_MOCK}/api/v1/qr-codes`
-        : `${API_BASE_MOCK}/api/public/qr-codes`
-
-      const headers = apiHeaders(clientIp, { 'Content-Type': 'application/json' })
-      if (isAuthenticated) {
-        headers['Authorization'] = `Bearer ${apiKey}`
-        headers[MCP_TOOL_HEADER] = 'generate_qr_code'
-      }
-
-      const res = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(body) })
-
-      if (res.status === 401) throw new Error('Invalid API key. Check your Authorization header.')
-      if (res.status === 403) {
-        const data = await res.json().catch(() => ({})) as Record<string, unknown>
-        throw new Error(`Access denied: ${String(data['error'] ?? 'plan does not support this')}`)
-      }
-      if (res.status === 429) {
-        const retryAfter = res.headers.get('Retry-After') ?? '60'
-        if (isAuthenticated) {
-          const data = await res.json().catch(() => ({})) as Record<string, unknown>
-          throw new Error(typeof data['error'] === 'string' ? data['error'] : `Rate limit reached. Please retry after ${retryAfter} seconds.`)
-        }
-        throw new Error(`Rate limit reached. Please retry after ${retryAfter} seconds.`)
-      }
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({})) as Record<string, unknown>
-        throw new Error(`QR API returned ${res.status}: ${String(data['error'] ?? res.statusText)}`)
-      }
-
-      const data = await res.json() as {
-        qrImage: string
-        imageUrl?: string
-        shortUrl?: string | null
-        type: string
-        content: string
-        id?: string
-      }
-      const base64 = data.qrImage.replace(/^data:image\/[^;]+;base64,/, '')
-      const savedNote = isAuthenticated && data.id
-        ? `\nSaved to account with ID: ${data.id}`
-        : '\nNote: QR code is ephemeral — the hosted URL expires in 24 hours.'
-
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text:
-              `QR code generated.\nType: ${data.type}\nContent: ${data.content}\n` +
-              `${formatShareLinkLine(data, isAuthenticated)}${savedNote}`,
-          },
-          { type: 'image' as const, data: base64, mimeType: 'image/png' as const },
-        ],
-      }
-    }
-  )
-
-  server.tool(
-    'list_qr_codes',
-    'List QR codes saved to the account.',
-    {
-      page:  z.number().int().min(1).optional(),
-      limit: z.number().int().min(1).max(100).optional(),
-      type:  z.enum(['url', 'wifi', 'contact', 'text', 'email']).optional(),
-    },
-    async ({ page = 1, limit = 20, type }) => {
-      if (!isAuthenticated) throw new Error('list_qr_codes requires a Developer plan API key.')
-      const params = new URLSearchParams({ page: String(page), limit: String(limit) })
-      if (type) params.set('type', type)
-      const res = await fetch(`${API_BASE_MOCK}/api/v1/qr-codes?${params}`, {
-        headers: apiHeaders(clientIp, { Authorization: `Bearer ${apiKey}`, [MCP_TOOL_HEADER]: 'list_qr_codes' }),
-      })
-      if (res.status === 403) throw new Error(await forbiddenMessage(res, 'list_qr_codes requires a Developer plan API key.'))
-      if (!res.ok) throw new Error(`QR API returned ${res.status}`)
-      const raw = await res.json() as {
-        data:        unknown[]
-        pagination?: { page: number; limit: number; total: number }
-        page?:       number
-        total?:      number
-        limit?:      number
-      }
-      const { page: listPage, total: listTotal } = normalizeListPagination(raw)
-      return {
-        content: [{
-          type: 'text' as const,
-          text:   `QR codes (page ${listPage}, ${raw.data.length} of ${listTotal})`,
-        }],
-      }
-    }
-  )
-
-  server.tool(
-    'get_analytics',
-    'Get scan analytics.',
-    {
-      qrCodeId:  z.string().optional(),
-      timeRange: z.enum(['1h', '1d', '7d', '30d', '90d', '1y']).optional(),
-    },
-    async ({ qrCodeId, timeRange = '30d' }) => {
-      if (!isAuthenticated) throw new Error('get_analytics requires a Developer plan API key.')
-      const params = new URLSearchParams({ timeRange })
-      if (qrCodeId) params.set('qrCodeId', qrCodeId)
-      const res = await fetch(`${API_BASE_MOCK}/api/v1/analytics?${params}`, {
-        headers: apiHeaders(clientIp, { Authorization: `Bearer ${apiKey}`, [MCP_TOOL_HEADER]: 'get_analytics' }),
-      })
-      if (res.status === 403) throw new Error(await forbiddenMessage(res, 'get_analytics requires a Developer plan API key.'))
-      if (!res.ok) throw new Error(`QR API returned ${res.status}`)
-      const data = await res.json()
-      return { content: [{ type: 'text' as const, text: `Analytics (${timeRange}):\n\n${JSON.stringify(data, null, 2)}` }] }
-    }
-  )
-
-  return server
 }
 
 // ---------------------------------------------------------------------------
@@ -452,7 +243,7 @@ describe('apiHeaders', () => {
 
   it('keeps the User-Agent and merges extras', () => {
     const h = apiHeaders('203.0.113.7', { Authorization: 'Bearer k' })
-    expect(h['User-Agent']).toBe('theqrcode-mcp/1.2')
+    expect(h['User-Agent']).toBe('theqrcode-mcp/1.3')
     expect(h['Authorization']).toBe('Bearer k')
   })
 })
