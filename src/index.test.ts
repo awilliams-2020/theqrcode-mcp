@@ -201,12 +201,16 @@ function createServer(apiKey: string | null, clientIp: string | null = null): Mc
       size:       z.number().int().min(64).max(1024).optional(),
       darkColor:  z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
       lightColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
+      format:     z.enum(['png', 'svg', 'pdf']).optional(),
     },
-    async ({ type, content, name, size, darkColor, lightColor }) => {
-      if (!isAuthenticated && type === 'email') {
+    async ({ type, content, name, size, darkColor, lightColor, format }) => {
+      // Every QR type is keyless (2026-09-20) — `email` is `mailto:` + the content,
+      // so the gate was removed rather than enforced. What a key buys here is svg
+      // and pdf output, which is metered per key because it is the expensive path.
+      if (!isAuthenticated && format && format !== 'png') {
         throw new Error(
-          'type "email" requires an API key. The public QR API only supports url, wifi, contact, ' +
-            'and text — use one of those, or connect with a Bearer token.'
+          `format "${format}" requires an API key, because vector and PDF rendering is ` +
+            'metered per key rather than per IP.'
         )
       }
       const body: Record<string, unknown> = { type, content }
@@ -224,6 +228,7 @@ function createServer(apiKey: string | null, clientIp: string | null = null): Mc
         settings.color = color
       }
       if (Object.keys(settings).length > 0) body.settings = settings
+      if (isAuthenticated && format) body.format = format
 
       const endpoint = isAuthenticated
         ? `${API_BASE_MOCK}/api/v1/qr-codes`
@@ -667,19 +672,55 @@ describe('generate_qr_code — routing', () => {
     }
   })
 
-  it('unauthenticated email type fails before calling upstream', async () => {
+  it('sends an unauthenticated email type straight upstream, like any other type', async () => {
+    // This used to assert the opposite. The email "type" is `mailto:` prepended to
+    // the content, so a free user reproduced it byte-for-byte with a text code —
+    // the gate was dropped on 2026-09-20 rather than enforced.
     const { url, server } = await startTestServer(null)
     try {
       const result = await mcpCallTool(url, 'generate_qr_code', {
         type:    'email',
         content: 'a@b.com',
       })
+      expect(result.error).toBeUndefined()
+      expect(upstreamCalls.length).toBe(1)
+      expect(JSON.parse((upstreamCalls[0]!.opts?.body as string) ?? '{}')).toMatchObject({ type: 'email' })
+    } finally {
+      await stopServer(server)
+    }
+  })
+
+  it('refuses svg without a key, before calling upstream', async () => {
+    // The keyless endpoint renders PNG only. Failing here with the reason lets the
+    // model retry usefully instead of surfacing an unexplained 400.
+    const { url, server } = await startTestServer(null)
+    try {
+      const result = await mcpCallTool(url, 'generate_qr_code', {
+        type:    'url',
+        content: 'https://example.com',
+        format:  'svg',
+      })
       const errText =
         result.error?.message ??
         result.result?.content?.find((c: { type: string }) => c.type === 'text')?.text ??
         ''
-      expect(errText).toMatch(/email.*API key|public QR API/i)
+      expect(errText).toMatch(/API key/i)
       expect(upstreamCalls.length).toBe(0)
+    } finally {
+      await stopServer(server)
+    }
+  })
+
+  it('forwards a requested format on an authenticated call', async () => {
+    const { url, server } = await startTestServer('qr_live_key')
+    try {
+      const result = await mcpCallTool(url, 'generate_qr_code', {
+        type:    'url',
+        content: 'https://example.com',
+        format:  'pdf',
+      })
+      expect(result.error).toBeUndefined()
+      expect(JSON.parse((upstreamCalls[0]!.opts?.body as string) ?? '{}')).toMatchObject({ format: 'pdf' })
     } finally {
       await stopServer(server)
     }

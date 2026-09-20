@@ -72,7 +72,7 @@ function apiHeaders(
   extra?: Record<string, string>
 ): Record<string, string> {
   return {
-    "User-Agent": "theqrcode-mcp/1.2",
+    "User-Agent": "theqrcode-mcp/1.3",
     ...(clientIp ? { "X-Forwarded-For": clientIp } : {}),
     ...extra,
   };
@@ -111,7 +111,7 @@ const GenerateQRInput = {
       "QR code type. Use 'url' for web links, 'wifi' for network credentials " +
         "(format: WIFI:T:WPA;S:<ssid>;P:<password>;;), 'contact' for vCard data, " +
         "'text' for arbitrary strings, 'email' for email addresses. " +
-        "Note: 'email' requires a Bearer token — it cannot be used with the public (unauthenticated) MCP session."
+        "Every type works without a key."
     ),
   name: z
     .string()
@@ -146,7 +146,45 @@ const GenerateQRInput = {
     .regex(/^#[0-9A-Fa-f]{6}$/)
     .optional()
     .describe("Hex color for the background, e.g. '#ffffff'. Defaults to '#FFFFFF'."),
+  dotStyle: z
+    .enum(["square", "dots", "rounded", "extra-rounded", "classy", "classy-rounded"])
+    .optional()
+    .describe("Shape of the QR modules. Free on every plan, keyless sessions included."),
+  cornerStyle: z
+    .enum(["square", "dot", "extra-rounded"])
+    .optional()
+    .describe("Shape of the three large corner squares. Free on every plan."),
+  frameStyle: z
+    .enum(["square", "rounded", "circle", "dashed"])
+    .optional()
+    .describe(
+      "Draw a frame around the code. 'square' means no frame. Free on every plan."
+    ),
+  caption: z
+    .string()
+    .max(60)
+    .optional()
+    .describe(
+      "Short text rendered under the code, e.g. 'Scan for the menu'. Forces a frame " +
+        "to be drawn, because the text needs a band to sit on. Free on every plan."
+    ),
+  format: z
+    .enum(["png", "svg", "pdf"])
+    .optional()
+    .describe(
+      "Output format, returned as a data URL of that type. Defaults to 'png'. " +
+        "svg and pdf REQUIRE an API key: vector and PDF are the most expensive render " +
+        "path, so they sit behind a per-key rate limit rather than a per-IP one. This " +
+        "is a cost control, not a plan feature — both are free in the dashboard and in " +
+        "the browser generator on every plan."
+    ),
 };
+
+/**
+ * Logo embedding is free like the rest of the design surface, but is deliberately
+ * NOT a parameter here: it needs a base64 data URL of the image, which is a poor
+ * fit for a tool call an LLM fills in. Use the editor or the REST API for logos.
+ */
 
 const ListQRCodesInput = {
   page: z
@@ -225,7 +263,7 @@ function normalizeListPagination(raw: {
 // ---------------------------------------------------------------------------
 
 function createServer(apiKey: string | null, clientIp: string | null): McpServer {
-  const server          = new McpServer({ name: "theqrcode-mcp", version: "1.2.0" });
+  const server          = new McpServer({ name: "theqrcode-mcp", version: "1.3.0" });
   const isAuthenticated = apiKey !== null;
 
   // -------------------------------------------------------------------------
@@ -238,14 +276,32 @@ function createServer(apiKey: string | null, clientIp: string | null): McpServer
     "generate_qr_code",
     "Generate a QR code image. Use this whenever a user asks to create, make, or generate a QR " +
       "code for a URL, website, WiFi network, contact card, email, or text. " +
-      "Returns a hosted image URL and a base64 PNG data URL for inline display. " +
-      "When authenticated, the QR code is saved to the user's account.",
+      "Returns a hosted image URL and a base64 data URL for inline display. " +
+      "Colour, size, dot and corner styling, frames and captions are free on every plan " +
+      "and with no key at all — offer them freely. " +
+      "When authenticated, the QR code is saved to the user's account and svg/pdf output " +
+      "becomes available.",
     GenerateQRInput,
-    async ({ type, content, name, size, darkColor, lightColor }) => {
-      if (!isAuthenticated && type === "email") {
+    async ({
+      type,
+      content,
+      name,
+      size,
+      darkColor,
+      lightColor,
+      dotStyle,
+      cornerStyle,
+      frameStyle,
+      caption,
+      format,
+    }) => {
+      // The keyless endpoint renders PNG only. Refuse here with the reason rather
+      // than letting the API 400, so the model can retry usefully.
+      if (!isAuthenticated && format && format !== "png") {
         throw new Error(
-          'type "email" requires an API key. The public QR API only supports url, wifi, contact, ' +
-            "and text — use one of those, or connect with a Bearer token."
+          `format "${format}" requires an API key, because vector and PDF rendering is ` +
+            "metered per key rather than per IP. Without a key, ask for png — or open the " +
+            "code at https://theqrcode.io, where svg and pdf are free on every plan."
         );
       }
 
@@ -265,7 +321,23 @@ function createServer(apiKey: string | null, clientIp: string | null): McpServer
         if (lightColor) color.light = lightColor;
         settings.color = color;
       }
+      if (dotStyle !== undefined || cornerStyle !== undefined) {
+        const styling: Record<string, string> = {};
+        if (dotStyle)    styling.dotsType          = dotStyle;
+        if (cornerStyle) styling.cornersSquareType = cornerStyle;
+        settings.styling = styling;
+      }
+      // A caption needs a band to sit on, so it implies a frame; 'square' is the
+      // API's name for "no frame", which would drop the caption silently.
+      if (frameStyle !== undefined || caption !== undefined) {
+        const frame: Record<string, unknown> = {
+          style: frameStyle ?? (caption ? "rounded" : "square"),
+        };
+        if (caption) frame.caption = { text: caption };
+        settings.frame = frame;
+      }
       if (Object.keys(settings).length > 0) body.settings = settings;
+      if (isAuthenticated && format) body.format = format;
 
       // Route to authenticated v1 endpoint when a key is present
       const endpoint = isAuthenticated
@@ -323,22 +395,40 @@ function createServer(apiKey: string | null, clientIp: string | null): McpServer
         id?:       string;
       };
 
-      const base64 = data.qrImage.replace(/^data:image\/[^;]+;base64,/, "");
       const savedNote = isAuthenticated && data.id
         ? `\nSaved to account with ID: ${data.id}`
         : "\nNote: QR code is ephemeral — the hosted URL expires in 24 hours.";
 
+      const summary = {
+        type: "text" as const,
+        text:
+          `QR code generated.\n` +
+          `Type: ${data.type}\n` +
+          `Content: ${data.content}\n` +
+          `${formatShareLinkLine(data, isAuthenticated)}` +
+          savedNote,
+      };
+
+      // A PDF is not an image block, and plenty of clients will not draw an SVG
+      // one either — hand those back as the data URL instead of a picture the
+      // client silently fails to render.
+      if (format && format !== "png") {
+        return {
+          content: [
+            summary,
+            {
+              type: "text" as const,
+              text: `${format.toUpperCase()} data URL:\n${data.qrImage}`,
+            },
+          ],
+        };
+      }
+
+      const base64 = data.qrImage.replace(/^data:image\/[^;]+;base64,/, "");
+
       return {
         content: [
-          {
-            type: "text" as const,
-            text:
-              `QR code generated.\n` +
-              `Type: ${data.type}\n` +
-              `Content: ${data.content}\n` +
-              `${formatShareLinkLine(data, isAuthenticated)}` +
-              savedNote,
-          },
+          summary,
           {
             type:     "image" as const,
             data:     base64,
@@ -487,7 +577,7 @@ app.use(express.json());
 
 // Health check
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok", service: "theqrcode-mcp", version: "1.2.0" });
+  res.json({ status: "ok", service: "theqrcode-mcp", version: "1.3.0" });
 });
 
 // Glama.ai ownership verification — HTTP challenge for mcp.theqrcode.io

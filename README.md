@@ -74,21 +74,37 @@ crawlers see the real surface — but the two account tools refuse at call time 
 
 | Param | Type | Required | Notes |
 |---|---|---|---|
-| `type` | `url` \| `wifi` \| `contact` \| `text` \| `email` | yes | `email` requires a key |
+| `type` | `url` \| `wifi` \| `contact` \| `text` \| `email` | yes | all five free, no key |
 | `content` | string | yes | the data to encode |
 | `name` | string | no | display name when saving to an account |
 | `size` | int 64–1024 | no | default 256 |
 | `darkColor` | `#RRGGBB` | no | default `#000000` |
 | `lightColor` | `#RRGGBB` | no | default `#FFFFFF` |
+| `dotStyle` | `square` \| `dots` \| `rounded` \| `extra-rounded` \| `classy` \| `classy-rounded` | no | module shape |
+| `cornerStyle` | `square` \| `dot` \| `extra-rounded` | no | the three corner squares |
+| `frameStyle` | `square` \| `rounded` \| `circle` \| `dashed` | no | `square` means no frame |
+| `caption` | string ≤60 | no | text under the code; implies a frame |
+| `format` | `png` \| `svg` \| `pdf` | no | default `png`; **svg/pdf need a key** |
 
-Returns a hosted PNG URL plus a base64 data URL for inline display.
+Returns a hosted image URL plus a base64 data URL for inline display. `svg` and `pdf` come back as
+a data URL in the text response rather than an image block, since a PDF is not one and many clients
+will not draw an SVG one.
+
+**Every design option is free, on every plan and with no key at all** — colour, size, dot and corner
+styling, frames and captions, with no watermark on any output. What the paid plans sell is dynamic
+codes, analytics, stored-code volume and the managed API. Logo embedding is free too but is not a
+parameter here: it needs a base64 data URL, which is a poor fit for a tool call.
+
+`format: "svg" | "pdf"` is the one asymmetry, and it is a cost control rather than a paywall: vector
+and PDF are the most expensive render path, so they are metered per key instead of per IP. Both are
+free in the dashboard and in the no-signup generator on theqrcode.io, on every plan.
 
 **Anonymous** → the public keyless API, 100 requests/hour per IP. The hosted link is a **24-hour
 preview**; download the image rather than bookmarking the URL. The QR code itself never expires —
 it is the preview *hosting* that is temporary.
 
 **Authenticated** → the v1 API. The code is **saved to your account permanently**, rate limited by
-key rather than IP, and `email` becomes available.
+key rather than IP, and `format: "svg" | "pdf"` becomes available.
 
 ### `list_qr_codes` — Developer plan
 
@@ -109,7 +125,7 @@ code.
 
 | | Anonymous | Developer ($19/mo) | Pro ($29/mo) |
 |---|---|---|---|
-| `generate_qr_code` | ✅ url, wifi, contact, text | ✅ + email | ✅ + email |
+| `generate_qr_code` | ✅ all 5 types, full design | ✅ + svg/pdf output | ✅ + svg/pdf output |
 | Codes saved to account | ❌ 24h preview link | ✅ permanent | ✅ permanent |
 | `list_qr_codes` | ❌ | ✅ | ❌ |
 | `get_analytics` | ❌ | ✅ | ❌ |
@@ -152,8 +168,9 @@ docker run -p 3001:3000 -e PORT=3000 theqrcode-mcp
 ## What it wraps
 
 TheQRCode.io is a QR code generation and analytics platform: static and dynamic QR codes for URLs,
-WiFi, vCard contacts and text, with scan analytics by time, device and approximate location. Static
-codes never expire, and printed codes are never switched off to force an upgrade.
+WiFi, vCard contacts, text and email, with scan analytics by time, device and approximate location.
+Static codes never expire, printed codes are never switched off to force an upgrade, and the design
+of a code is never billed for.
 
 This server is one of three ways in — the others are a
 [keyless REST API](https://theqrcode.io/qr-code-api) and

@@ -2,8 +2,8 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.theqrcode/qr-code-generator",
   "title": "TheQRCode.io",
-  "description": "Generate QR codes for URLs, WiFi, contacts and text. Paid API key adds saved codes + analytics.",
-  "version": "1.2.0",
+  "description": "Generate QR codes for URLs, WiFi, contacts, text and email. Colour, styling, frames and captions are free with no key. API key adds saved codes + analytics.",
+  "version": "1.3.0",
   "websiteUrl": "https://theqrcode.io",
   "repository": {
     "url": "https://github.com/awilliams-2020/theqrcode-mcp",
@@ -16,7 +16,7 @@
       "headers": [
         {
           "name": "Authorization",
-          "description": "Optional. Bearer <api key>. Without it the session is anonymous and exposes only generate_qr_code (url, wifi, contact, text; 100 req/hr per IP). A Developer ($19/mo) or Pro ($29/mo) key saves codes to the account and enables the email QR type, at 2,000 MCP requests/hr on Developer or 500/hr on Pro. list_qr_codes and get_analytics require a Developer key.",
+          "description": "Optional. Bearer <api key>. Without it the session is anonymous: generate_qr_code only, every QR type and every design option, PNG output, 100 req/hr per IP. A Developer ($19/mo) or Pro ($29/mo) key saves codes to the account and unlocks svg/pdf output, at 2,000 MCP requests/hr on Developer or 500/hr on Pro. list_qr_codes and get_analytics require a Developer key.",
           "isRequired": false,
           "isSecret": true
         }
