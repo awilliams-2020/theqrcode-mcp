@@ -243,7 +243,7 @@ describe('apiHeaders', () => {
 
   it('keeps the User-Agent and merges extras', () => {
     const h = apiHeaders('203.0.113.7', { Authorization: 'Bearer k' })
-    expect(h['User-Agent']).toBe('theqrcode-mcp/1.3')
+    expect(h['User-Agent']).toBe('theqrcode-mcp/1.4')
     expect(h['Authorization']).toBe('Bearer k')
   })
 })
@@ -512,6 +512,19 @@ describe('generate_qr_code — routing', () => {
       })
       expect(result.error).toBeUndefined()
       expect(JSON.parse((upstreamCalls[0]!.opts?.body as string) ?? '{}')).toMatchObject({ format: 'pdf' })
+    } finally {
+      await stopServer(server)
+    }
+  })
+  it('sends the caption font alongside the caption text', async () => {
+    mockFetchOk(makeMockQrResponse({ id: undefined }))
+    const { url, server } = await startTestServer(null)
+    try {
+      await mcpCallTool(url, 'generate_qr_code', {
+        type: 'url', content: 'https://example.com', caption: 'Scan me', captionFont: 'pacifico',
+      })
+      const body = JSON.parse((upstreamCalls[0]!.opts?.body as string) ?? '{}')
+      expect(body.settings.frame).toEqual({ style: 'rounded', caption: { text: 'Scan me', font: 'pacifico' } })
     } finally {
       await stopServer(server)
     }

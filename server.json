@@ -3,7 +3,7 @@
   "name": "io.theqrcode/qr-code-generator",
   "title": "TheQRCode.io",
   "description": "Free styled QR codes, no key: URL, WiFi, contact, text, email. API key adds saved codes + analytics.",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "websiteUrl": "https://theqrcode.io",
   "repository": {
     "url": "https://github.com/awilliams-2020/theqrcode-mcp",

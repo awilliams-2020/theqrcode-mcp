@@ -72,7 +72,7 @@ export function apiHeaders(
   extra?: Record<string, string>
 ): Record<string, string> {
   return {
-    "User-Agent": "theqrcode-mcp/1.3",
+    "User-Agent": "theqrcode-mcp/1.4",
     ...(clientIp ? { "X-Forwarded-For": clientIp } : {}),
     ...extra,
   };
@@ -167,6 +167,17 @@ const GenerateQRInput = {
     .describe(
       "Short text rendered under the code, e.g. 'Scan for the menu'. Forces a frame " +
         "to be drawn, because the text needs a band to sit on. Free on every plan."
+    ),
+  captionFont: z
+    .enum([
+      "inter", "oswald", "bebas-neue", "fredoka", "playfair-display",
+      "roboto-slab", "pacifico", "dancing-script", "permanent-marker", "space-mono",
+    ])
+    .optional()
+    .describe(
+      "Typeface for the caption. Defaults to 'inter' (bold sans). 'pacifico' and " +
+        "'dancing-script' are scripts, 'permanent-marker' is handwritten, " +
+        "'playfair-display' and 'roboto-slab' are serifs. Ignored without a caption."
     ),
   format: z
     .enum(["png", "svg", "pdf"])
@@ -263,7 +274,7 @@ export function normalizeListPagination(raw: {
 // ---------------------------------------------------------------------------
 
 export function createServer(apiKey: string | null, clientIp: string | null): McpServer {
-  const server          = new McpServer({ name: "theqrcode-mcp", version: "1.3.0" });
+  const server          = new McpServer({ name: "theqrcode-mcp", version: "1.4.0" });
   const isAuthenticated = apiKey !== null;
 
   // -------------------------------------------------------------------------
@@ -293,6 +304,7 @@ export function createServer(apiKey: string | null, clientIp: string | null): Mc
       cornerStyle,
       frameStyle,
       caption,
+      captionFont,
       format,
     }) => {
       // The keyless endpoint renders PNG only. Refuse here with the reason rather
@@ -333,7 +345,7 @@ export function createServer(apiKey: string | null, clientIp: string | null): Mc
         const frame: Record<string, unknown> = {
           style: frameStyle ?? (caption ? "rounded" : "square"),
         };
-        if (caption) frame.caption = { text: caption };
+        if (caption) frame.caption = captionFont ? { text: caption, font: captionFont } : { text: caption };
         settings.frame = frame;
       }
       if (Object.keys(settings).length > 0) body.settings = settings;
@@ -577,7 +589,7 @@ app.use(express.json());
 
 // Health check
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok", service: "theqrcode-mcp", version: "1.3.0" });
+  res.json({ status: "ok", service: "theqrcode-mcp", version: "1.4.0" });
 });
 
 // Glama.ai ownership verification — HTTP challenge for mcp.theqrcode.io
