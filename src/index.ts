@@ -600,10 +600,59 @@ app.get("/.well-known/glama.json", (_req, res) => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Usage log
+// ---------------------------------------------------------------------------
+
+/**
+ * What a JSON-RPC body asked for, reduced to what the usage log may keep.
+ *
+ * The access log only shows `POST /mcp`, which can't tell a monitor's
+ * initialize → tools/list from a real tool call. This names the method, the
+ * tool for `tools/call`, and the client's self-reported name for `initialize`.
+ * NEVER the arguments: QR content is user data (URLs, WiFi passwords, contacts).
+ * A batch body yields one entry per message.
+ */
+export function describeRpc(body: unknown): { method: string; tool?: string; client?: string }[] {
+  const msgs = Array.isArray(body) ? body : [body];
+  return msgs.flatMap((m) => {
+    if (!m || typeof m !== "object" || typeof (m as { method?: unknown }).method !== "string") return [];
+    const { method, params } = m as { method: string; params?: Record<string, unknown> };
+    const entry: { method: string; tool?: string; client?: string } = { method };
+    if (method === "tools/call" && typeof params?.name === "string") entry.tool = params.name.slice(0, 64);
+    if (method === "initialize") {
+      const info = params?.clientInfo as { name?: unknown; version?: unknown } | undefined;
+      if (typeof info?.name === "string") {
+        entry.client = `${info.name}${typeof info.version === "string" ? `/${info.version}` : ""}`.slice(0, 80);
+      }
+    }
+    return [entry];
+  });
+}
+
+/** One JSON line per /mcp request on stdout, read with `docker logs theqrcode-mcp`. */
+function logMcpRequest(req: Request, res: Response, clientIp: string | null, authed: boolean): void {
+  const started = Date.now();
+  const rpc     = describeRpc(req.body);
+  res.on("finish", () => {
+    console.log(JSON.stringify({
+      at:     new Date(started).toISOString(),
+      http:   req.method,
+      rpc:    rpc.length ? rpc : undefined,
+      status: res.statusCode,
+      ms:     Date.now() - started,
+      authed,
+      ip:     clientIp,
+      ua:     ((req.headers["user-agent"] as string | undefined) ?? "").slice(0, 120),
+    }));
+  });
+}
+
 // MCP endpoint — stateless: new server + transport per request
 async function handleMcp(req: Request, res: Response): Promise<void> {
   const apiKey   = extractApiKey(req);
   const clientIp = extractClientIP(req);
+  logMcpRequest(req, res, clientIp, apiKey !== null);
   const server   = createServer(apiKey, clientIp);
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless mode

@@ -74,6 +74,7 @@ const {
   defaultQrNameForMcp,
   extractApiKey: extractApiKeyFromRequest,
   extractClientIP: extractClientIPFromRequest,
+  describeRpc,
 } = await import('./index.js')
 
 /** The real pair take an express Request; the tests speak in header bags. */
@@ -229,6 +230,37 @@ describe('extractClientIP', () => {
   it('returns null when no forwarded header is present', () => {
     expect(extractClientIP({})).toBeNull()
     expect(extractClientIP({ 'x-real-ip': '   ' })).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// describeRpc — the usage log names methods and tools, never arguments
+// ---------------------------------------------------------------------------
+
+describe('describeRpc', () => {
+  it('names the tool of a tools/call and drops its arguments', () => {
+    const out = describeRpc({
+      jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: 'generate_qr_code', arguments: { type: 'wifi', content: 'WIFI:S:home;P:secret;;' } },
+    })
+    expect(out).toEqual([{ method: 'tools/call', tool: 'generate_qr_code' }])
+    expect(JSON.stringify(out)).not.toContain('secret')
+  })
+
+  it('names the client of an initialize', () => {
+    expect(describeRpc({ method: 'initialize', params: { clientInfo: { name: 'claude-ai', version: '0.1.0' } } }))
+      .toEqual([{ method: 'initialize', client: 'claude-ai/0.1.0' }])
+  })
+
+  it('describes each message of a batch', () => {
+    expect(describeRpc([{ method: 'notifications/initialized' }, { method: 'tools/list' }]))
+      .toEqual([{ method: 'notifications/initialized' }, { method: 'tools/list' }])
+  })
+
+  it('yields nothing for an empty or non-JSON-RPC body', () => {
+    expect(describeRpc(undefined)).toEqual([])
+    expect(describeRpc({})).toEqual([])
+    expect(describeRpc('junk')).toEqual([])
   })
 })
 
