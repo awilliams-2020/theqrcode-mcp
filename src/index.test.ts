@@ -9,8 +9,8 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import express from 'express'
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
+import { toNodeHandler } from '@modelcontextprotocol/node'
+import { createMcpHandler } from '@modelcontextprotocol/server'
 import type { Server } from 'http'
 
 // ---------------------------------------------------------------------------
@@ -75,6 +75,7 @@ const {
   extractApiKey: extractApiKeyFromRequest,
   extractClientIP: extractClientIPFromRequest,
   describeRpc,
+  serverForRequest,
 } = await import('./index.js')
 
 /** The real pair take an express Request; the tests speak in header bags. */
@@ -145,13 +146,10 @@ async function startTestServer(apiKey: string | null): Promise<{ url: string; se
   const app = express()
   app.use(express.json())
 
-  app.post('/mcp', async (req, res) => {
-    const mcpServer = createServer(apiKey, extractClientIP(req.headers as Record<string, string | undefined>))
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined })
-    res.on('close', () => { transport.close().catch(() => {}); mcpServer.close().catch(() => {}) })
-    await mcpServer.connect(transport)
-    await transport.handleRequest(req, res, req.body)
-  })
+  // Same handler as production; the key is injected rather than read from a header.
+  const handler = toNodeHandler(createMcpHandler((ctx) =>
+    createServer(apiKey, extractClientIP(Object.fromEntries(ctx.requestInfo?.headers ?? [])))))
+  app.post('/mcp', (req, res) => void handler(req, res, req.body))
 
   return new Promise((resolve) => {
     const server = app.listen(0, () => {
@@ -275,7 +273,7 @@ describe('apiHeaders', () => {
 
   it('keeps the User-Agent and merges extras', () => {
     const h = apiHeaders('203.0.113.7', { Authorization: 'Bearer k' })
-    expect(h['User-Agent']).toBe('theqrcode-mcp/1.4')
+    expect(h['User-Agent']).toBe('theqrcode-mcp/1.5')
     expect(h['Authorization']).toBe('Bearer k')
   })
 })
@@ -329,6 +327,94 @@ describe('client IP reaches the QR API', () => {
       await stopServer(server)
     }
   })
+})
+
+// ---------------------------------------------------------------------------
+// Tests: both protocol eras through the production factory
+//
+// 2026-07-28 clients open with server/discover; on 1.x of the SDK that was a
+// 400 and every Claude session paid a second round trip to fall back to
+// initialize. serverForRequest reads the key and client IP from the request
+// the handler hands it, so these run with real headers, not an injected key.
+// ---------------------------------------------------------------------------
+
+const MODERN_META = {
+  'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+  'io.modelcontextprotocol/clientInfo': { name: 'test-client', version: '1.0.0' },
+  'io.modelcontextprotocol/clientCapabilities': {},
+}
+
+async function startProductionServer(): Promise<{ url: string; server: Server }> {
+  const app = express()
+  app.use(express.json())
+  const handler = toNodeHandler(createMcpHandler(serverForRequest))
+  app.post('/mcp', (req, res) => void handler(req, res, req.body))
+  return new Promise((resolve) => {
+    const server = app.listen(0, () => {
+      const addr = server.address() as { port: number }
+      resolve({ url: `http://localhost:${addr.port}`, server })
+    })
+  })
+}
+
+async function rpc(baseUrl: string, body: unknown, headers: Record<string, string> = {}) {
+  const res  = await fetch(`${baseUrl}/mcp`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', ...headers },
+    body:    JSON.stringify(body),
+  })
+  const text = await res.text()
+  const jsonLine = text.split('\n').find(l => l.startsWith('data:'))
+  return { status: res.status, body: JSON.parse(jsonLine ? jsonLine.slice(5) : text) }
+}
+
+describe('protocol eras', () => {
+  beforeEach(() => {
+    upstreamQueue.length = 0
+    upstreamCalls.length = 0
+  })
+
+  it('answers server/discover with the 2026-07-28 revision', async () => {
+    const { url, server } = await startProductionServer()
+    try {
+      const { status, body } = await rpc(
+        url,
+        { jsonrpc: '2.0', id: 1, method: 'server/discover', params: { _meta: MODERN_META } },
+        { 'MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'server/discover' }
+      )
+      expect(status).toBe(200)
+      expect(body.result.supportedVersions).toContain('2026-07-28')
+      expect(body.result._meta['io.modelcontextprotocol/serverInfo'].name).toBe('theqrcode-mcp')
+    } finally {
+      await stopServer(server)
+    }
+  })
+
+  for (const era of ['modern', 'legacy'] as const) {
+    it(`reads the key and client IP from the request (${era})`, async () => {
+      mockFetchOk(makeMockQrResponse())
+      const { url, server } = await startProductionServer()
+      try {
+        const params = { name: 'generate_qr_code', arguments: { type: 'url', content: 'https://example.com' } }
+        const { body } = await rpc(
+          url,
+          { jsonrpc: '2.0', id: 3, method: 'tools/call', params: era === 'modern' ? { ...params, _meta: MODERN_META } : params },
+          {
+            Authorization: 'Bearer tqc_sk_live_abc123',
+            'X-Real-IP':   '203.0.113.7',
+            ...(era === 'modern' ? { 'MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': 'tools/call', 'Mcp-Name': 'generate_qr_code' } : {}),
+          }
+        )
+        expect(body.error).toBeUndefined()
+        expect(upstreamCalls[0]?.url).toBe(`${API_BASE_MOCK}/api/v1/qr-codes`)
+        const headers = upstreamCalls[0]?.opts?.headers as Record<string, string>
+        expect(headers['Authorization']).toBe('Bearer tqc_sk_live_abc123')
+        expect(headers['X-Forwarded-For']).toBe('203.0.113.7')
+      } finally {
+        await stopServer(server)
+      }
+    })
+  }
 })
 
 // ---------------------------------------------------------------------------

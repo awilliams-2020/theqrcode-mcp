@@ -1,5 +1,6 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { toNodeHandler } from "@modelcontextprotocol/node";
+import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
+import type { McpRequestContext } from "@modelcontextprotocol/server";
 import express, { Request, Response } from "express";
 import { z } from "zod";
 
@@ -15,7 +16,7 @@ const PORT     = process.env.PORT ?? 3001;
  * Accepts:  Authorization: Bearer qr_...  (the format ApiKeyManager issues)
  * Returns null when no key is present (public / unauthenticated session).
  */
-export function extractApiKey(req: Request): string | null {
+export function extractApiKey(req: Pick<Request, "headers">): string | null {
   const auth = (req.headers["authorization"] as string | undefined) ?? "";
   if (auth.startsWith("Bearer ")) return auth.slice(7).trim() || null;
   return null;
@@ -38,7 +39,7 @@ export function extractApiKey(req: Request): string | null {
  * one written by the proxy nearest us; reading `[0]` would read whatever the client
  * chose to prepend.
  */
-export function extractClientIP(req: Request): string | null {
+export function extractClientIP(req: Pick<Request, "headers">): string | null {
   const realIP = (req.headers["x-real-ip"] as string | undefined)?.trim();
   if (realIP) return realIP;
 
@@ -72,7 +73,7 @@ export function apiHeaders(
   extra?: Record<string, string>
 ): Record<string, string> {
   return {
-    "User-Agent": "theqrcode-mcp/1.4",
+    "User-Agent": "theqrcode-mcp/1.5",
     ...(clientIp ? { "X-Forwarded-For": clientIp } : {}),
     ...extra,
   };
@@ -104,7 +105,7 @@ async function forbiddenMessage(res: globalThis.Response, fallback: string): Pro
 // Tool parameter schemas
 // ---------------------------------------------------------------------------
 
-const GenerateQRInput = {
+const GenerateQRInput = z.object({
   type: z
     .enum(["url", "wifi", "contact", "text", "email"])
     .describe(
@@ -189,7 +190,7 @@ const GenerateQRInput = {
         "is a cost control, not a plan feature — both are free in the dashboard and in " +
         "the browser generator on every plan."
     ),
-};
+});
 
 /**
  * Logo embedding is free like the rest of the design surface, but is deliberately
@@ -197,7 +198,7 @@ const GenerateQRInput = {
  * fit for a tool call an LLM fills in. Use the editor or the REST API for logos.
  */
 
-const ListQRCodesInput = {
+const ListQRCodesInput = z.object({
   page: z
     .number()
     .int()
@@ -215,9 +216,9 @@ const ListQRCodesInput = {
     .enum(["url", "wifi", "contact", "text", "email"])
     .optional()
     .describe("Filter by QR code type."),
-};
+});
 
-const GetAnalyticsInput = {
+const GetAnalyticsInput = z.object({
   qrCodeId: z
     .string()
     .optional()
@@ -226,7 +227,7 @@ const GetAnalyticsInput = {
     .enum(["1h", "1d", "7d", "30d", "90d", "1y"])
     .optional()
     .describe("Time range for analytics data. Defaults to '30d'."),
-};
+});
 
 /** POST /api/v1/qr-codes requires `name`; used when the tool omits it. */
 export function defaultQrNameForMcp(type: string, content: string): string {
@@ -274,7 +275,7 @@ export function normalizeListPagination(raw: {
 // ---------------------------------------------------------------------------
 
 export function createServer(apiKey: string | null, clientIp: string | null): McpServer {
-  const server          = new McpServer({ name: "theqrcode-mcp", version: "1.4.0" });
+  const server          = new McpServer({ name: "theqrcode-mcp", version: "1.5.0" });
   const isAuthenticated = apiKey !== null;
 
   // -------------------------------------------------------------------------
@@ -283,16 +284,19 @@ export function createServer(apiKey: string | null, clientIp: string | null): Mc
   // Authenticated   → v1 endpoint  (saved to account, key rate limited)
   // -------------------------------------------------------------------------
 
-  server.tool(
+  server.registerTool(
     "generate_qr_code",
-    "Generate a QR code image. Use this whenever a user asks to create, make, or generate a QR " +
-      "code for a URL, website, WiFi network, contact card, email, or text. " +
-      "Returns a hosted image URL and a base64 data URL for inline display. " +
-      "Colour, size, dot and corner styling, frames and captions are free on every plan " +
-      "and with no key at all — offer them freely. " +
-      "When authenticated, the QR code is saved to the user's account and svg/pdf output " +
-      "becomes available.",
-    GenerateQRInput,
+    {
+      description:
+        "Generate a QR code image. Use this whenever a user asks to create, make, or generate a QR " +
+          "code for a URL, website, WiFi network, contact card, email, or text. " +
+          "Returns a hosted image URL and a base64 data URL for inline display. " +
+          "Colour, size, dot and corner styling, frames and captions are free on every plan " +
+          "and with no key at all — offer them freely. " +
+          "When authenticated, the QR code is saved to the user's account and svg/pdf output " +
+          "becomes available.",
+      inputSchema: GenerateQRInput,
+    },
     async ({
       type,
       content,
@@ -462,12 +466,15 @@ export function createServer(apiKey: string | null, clientIp: string | null): Mc
   // -------------------------------------------------------------------------
 
   // Tool: list_qr_codes
-  server.tool(
+  server.registerTool(
     "list_qr_codes",
-    "List QR codes saved to the authenticated user's account. " +
-      "Supports pagination and filtering by type. " +
-      "Requires an authenticated API key (Developer plan).",
-    ListQRCodesInput,
+    {
+      description:
+        "List QR codes saved to the authenticated user's account. " +
+          "Supports pagination and filtering by type. " +
+          "Requires an authenticated API key (Developer plan).",
+      inputSchema: ListQRCodesInput,
+    },
     async ({ page = 1, limit = 20, type }) => {
       if (!isAuthenticated) {
         throw new Error(
@@ -529,12 +536,15 @@ export function createServer(apiKey: string | null, clientIp: string | null): Mc
   );
 
   // Tool: get_analytics
-  server.tool(
+  server.registerTool(
     "get_analytics",
-    "Get scan analytics for the authenticated user's QR codes. " +
-      "Optionally filter to a specific QR code by ID. " +
-      "Requires an authenticated API key (Developer plan).",
-    GetAnalyticsInput,
+    {
+      description:
+        "Get scan analytics for the authenticated user's QR codes. " +
+          "Optionally filter to a specific QR code by ID. " +
+          "Requires an authenticated API key (Developer plan).",
+      inputSchema: GetAnalyticsInput,
+    },
     async ({ qrCodeId, timeRange = "30d" }) => {
       if (!isAuthenticated) {
         throw new Error(
@@ -589,7 +599,7 @@ app.use(express.json());
 
 // Health check
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok", service: "theqrcode-mcp", version: "1.4.0" });
+  res.json({ status: "ok", service: "theqrcode-mcp", version: "1.5.0" });
 });
 
 // Glama.ai ownership verification — HTTP challenge for mcp.theqrcode.io
@@ -648,23 +658,28 @@ function logMcpRequest(req: Request, res: Response, clientIp: string | null, aut
   });
 }
 
-// MCP endpoint — stateless: new server + transport per request
+/**
+ * Builds the server for one request from the request it serves. The handler
+ * hands over a web-standard Request, so its headers are flattened into the
+ * shape the extractors read.
+ */
+export function serverForRequest(ctx: McpRequestContext): McpServer {
+  const req = { headers: Object.fromEntries(ctx.requestInfo?.headers ?? []) };
+  return createServer(extractApiKey(req), extractClientIP(req));
+}
+
+// MCP endpoint. Serves both protocol eras from one factory: 2026-07-28 clients
+// probe with server/discover, and 2025-era clients keep the initialize
+// handshake, served stateless (a fresh server per request) as before.
+const mcpHandler = toNodeHandler(
+  createMcpHandler(serverForRequest, {
+    onerror: (err) => console.error(JSON.stringify({ at: new Date().toISOString(), mcpError: String(err) })),
+  })
+);
+
 async function handleMcp(req: Request, res: Response): Promise<void> {
-  const apiKey   = extractApiKey(req);
-  const clientIp = extractClientIP(req);
-  logMcpRequest(req, res, clientIp, apiKey !== null);
-  const server   = createServer(apiKey, clientIp);
-  const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: undefined, // stateless mode
-  });
-
-  res.on("close", () => {
-    transport.close().catch(() => {});
-    server.close().catch(() => {});
-  });
-
-  await server.connect(transport);
-  await transport.handleRequest(req, res, req.body);
+  logMcpRequest(req, res, extractClientIP(req), extractApiKey(req) !== null);
+  await mcpHandler(req, res, req.body);
 }
 
 app.post("/mcp",   handleMcp);
