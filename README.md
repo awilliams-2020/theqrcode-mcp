@@ -145,18 +145,14 @@ is a plain Express app if you want to:
 ```bash
 npm install
 npm run build
-npm run start:http # HTTP server on $PORT (or: npm run dev)
-npm start          # one session over stdio, for a local client
+npm start          # or: npm run dev
 npm test
 ```
-
-Over stdio, set `THEQRCODE_API_KEY` to unlock the account tools; without it you get the keyless set.
 
 | Env | Default | Purpose |
 |---|---|---|
 | `QR_API_BASE` | `https://theqrcode.io` | REST API this server wraps |
-| `PORT` | `3001` | listen port (HTTP mode) |
-| `THEQRCODE_API_KEY` | — | API key for stdio mode (HTTP takes it per request as a Bearer token) |
+| `PORT` | `3001` | listen port |
 
 Routes: `POST|GET|DELETE /mcp` (stateless — a fresh server and transport per request), `GET /health`.
 

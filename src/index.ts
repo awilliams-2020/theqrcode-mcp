@@ -1,6 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import express, { Request, Response } from "express";
 import { z } from "zod";
 
@@ -674,16 +673,7 @@ app.delete("/mcp", handleMcp);
 
 // Not under test: the suite imports this module for the REAL createServer and
 // helpers, and a listen on import would leave a port bound for the whole run.
-// `--stdio` runs one session over stdin/stdout instead of HTTP: what local clients and
-// directory inspectors (Glama wraps `npm start` in mcp-proxy) expect. stdout is the
-// protocol channel there, so nothing else may be logged to it.
-const STDIO = process.argv.includes("--stdio");
-
-if (STDIO) {
-  createServer(process.env.THEQRCODE_API_KEY?.trim() || null, null)
-    .connect(new StdioServerTransport())
-    .catch((err) => { console.error(err); process.exit(1); });
-} else if (process.env.NODE_ENV !== "test") {
+if (process.env.NODE_ENV !== "test") {
   app.listen(PORT, () => {
     console.log(`theqrcode MCP server listening on port ${PORT}`);
     console.log(`  Health:   http://localhost:${PORT}/health`);
