@@ -275,7 +275,7 @@ export function normalizeListPagination(raw: {
 // ---------------------------------------------------------------------------
 
 export function createServer(apiKey: string | null, clientIp: string | null): McpServer {
-  const server          = new McpServer({ name: "theqrcode-mcp", version: "1.5.0" });
+  const server          = new McpServer({ name: "theqrcode-mcp", version: "1.5.1" });
   const isAuthenticated = apiKey !== null;
 
   // -------------------------------------------------------------------------
@@ -599,7 +599,7 @@ app.use(express.json());
 
 // Health check
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok", service: "theqrcode-mcp", version: "1.5.0" });
+  res.json({ status: "ok", service: "theqrcode-mcp", version: "1.5.1" });
 });
 
 // Glama.ai ownership verification — HTTP challenge for mcp.theqrcode.io
@@ -619,7 +619,8 @@ app.get("/.well-known/glama.json", (_req, res) => {
  *
  * The access log only shows `POST /mcp`, which can't tell a monitor's
  * initialize → tools/list from a real tool call. This names the method, the
- * tool for `tools/call`, and the client's self-reported name for `initialize`.
+ * tool for `tools/call`, and the client's self-reported name: from `initialize`
+ * on the 2025 protocol, from the `_meta` envelope of any request on 2026-07-28.
  * NEVER the arguments: QR content is user data (URLs, WiFi passwords, contacts).
  * A batch body yields one entry per message.
  */
@@ -630,11 +631,13 @@ export function describeRpc(body: unknown): { method: string; tool?: string; cli
     const { method, params } = m as { method: string; params?: Record<string, unknown> };
     const entry: { method: string; tool?: string; client?: string } = { method };
     if (method === "tools/call" && typeof params?.name === "string") entry.tool = params.name.slice(0, 64);
-    if (method === "initialize") {
-      const info = params?.clientInfo as { name?: unknown; version?: unknown } | undefined;
-      if (typeof info?.name === "string") {
-        entry.client = `${info.name}${typeof info.version === "string" ? `/${info.version}` : ""}`.slice(0, 80);
-      }
+    // 2025-era clients name themselves once, on initialize; 2026-07-28 clients
+    // have no initialize and carry clientInfo in every request's _meta envelope.
+    const meta = params?._meta as Record<string, unknown> | undefined;
+    const info = (method === "initialize" ? params?.clientInfo : meta?.["io.modelcontextprotocol/clientInfo"]) as
+      { name?: unknown; version?: unknown } | undefined;
+    if (typeof info?.name === "string") {
+      entry.client = `${info.name}${typeof info.version === "string" ? `/${info.version}` : ""}`.slice(0, 80);
     }
     return [entry];
   });

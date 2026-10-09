@@ -250,6 +250,13 @@ describe('describeRpc', () => {
       .toEqual([{ method: 'initialize', client: 'claude-ai/0.1.0' }])
   })
 
+  it('names the client from the _meta envelope of a 2026-07-28 request', () => {
+    expect(describeRpc({ method: 'server/discover', params: { _meta: MODERN_META } }))
+      .toEqual([{ method: 'server/discover', client: 'test-client/1.0.0' }])
+    expect(describeRpc({ method: 'tools/call', params: { name: 'generate_qr_code', _meta: MODERN_META } }))
+      .toEqual([{ method: 'tools/call', tool: 'generate_qr_code', client: 'test-client/1.0.0' }])
+  })
+
   it('describes each message of a batch', () => {
     expect(describeRpc([{ method: 'notifications/initialized' }, { method: 'tools/list' }]))
       .toEqual([{ method: 'notifications/initialized' }, { method: 'tools/list' }])
