@@ -1,0 +1,4 @@
+# For pnpm installs (Glama's build runs `pnpm run start`): esbuild only serves the dev tools (tsx,
+# vitest), so its install script needn't run, and newer pnpm fails the install on an undecided one.
+allowBuilds:
+  esbuild: false
