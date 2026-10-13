@@ -1,6 +1,7 @@
 # TheQRCode.io MCP Server
 
 [![Listed on mcpservers.org](https://mcpservers.org/badge.svg)](https://mcpservers.org/servers/theqrcode-io-mcp)
+[![TheQRCode MCP server on Glama](https://glama.ai/mcp/servers/zwznco/theqrcode-mcp/badges/score.svg)](https://glama.ai/mcp/servers/zwznco/theqrcode-mcp)
 
 Generate QR codes — and read their scan analytics — from Claude, Cursor, or any MCP client.
 
