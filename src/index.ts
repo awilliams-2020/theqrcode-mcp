@@ -276,7 +276,7 @@ export function normalizeListPagination(raw: {
 // ---------------------------------------------------------------------------
 
 export function createServer(apiKey: string | null, clientIp: string | null): McpServer {
-  const server          = new McpServer({ name: "theqrcode-mcp", version: "1.5.1" });
+  const server          = new McpServer({ name: "theqrcode-mcp", version: "1.5.2" });
   const isAuthenticated = apiKey !== null;
 
   // -------------------------------------------------------------------------
@@ -600,7 +600,7 @@ app.use(express.json());
 
 // Health check
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok", service: "theqrcode-mcp", version: "1.5.1" });
+  res.json({ status: "ok", service: "theqrcode-mcp", version: "1.5.2" });
 });
 
 // Glama.ai ownership verification — HTTP challenge for mcp.theqrcode.io
